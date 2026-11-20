@@ -1,0 +1,15 @@
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30
+pydantic>=2.8,<3.0
+pydantic-settings>=2.4
+pymongo>=4.10,<5.0
+PyJWT>=2.8
+bcrypt>=4.1
+python-multipart>=0.0.9  # multipart uploads (Apache-2.0)
+openpyxl>=3.1  # read .xlsx imports (MIT)
+defusedxml>=0.7  # safe XML parsing for openpyxl (PSF)
+reportlab>=4.0  # PDF reports (BSD)
+# --- tests only ---
+pytest>=8.0
+httpx>=0.27
+mongomock>=4.2
