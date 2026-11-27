@@ -9,12 +9,12 @@ from typing import Any, Mapping
 
 from pymongo.database import Database
 
-from app.core.deps import SUSTAINABILITY_MANAGER
 from app.repositories.emission_factor import EmissionFactorRepository
 from app.repositories.facility import FacilityRepository
 from app.repositories.scope3 import Scope3Repository
-from app.services import periods
+from app.services import iam, masters, periods
 from app.services import scope3_engine as eng
+from app.services import facilities as facilities_svc
 from app.services.common import audit, conflict, forbidden, not_found, unprocessable
 from app.utils.time import to_iso, utcnow
 
@@ -22,7 +22,8 @@ from app.utils.time import to_iso, utcnow
 def _calc(db: Database, month: str, category: str, source: str, activity: float) -> dict[str, Any]:
     try:
         return eng.calculate(month=month, category=category, source=source, activity=activity,
-                             factors=EmissionFactorRepository(db).list())
+                             factors=EmissionFactorRepository(db).list(),
+                             source_id=masters.source_ids(db).get(source))
     except eng.Scope3Error as exc:
         raise unprocessable(str(exc)) from exc
 
@@ -30,11 +31,14 @@ def _calc(db: Database, month: str, category: str, source: str, activity: float)
 def _check_facility(db: Database, facility_id: str | None) -> None:
     if facility_id and not FacilityRepository(db).exists(facility_id):
         raise unprocessable(f"Unknown facility {facility_id}")
+    if facility_id:
+        facilities_svc.assert_active(db, facility_id)
 
 
-def _own_or_manager(user: Mapping[str, Any], row: Mapping[str, Any]) -> None:
-    if user.get("appRole") not in (SUSTAINABILITY_MANAGER, "Administrator") and row["createdById"] != user["id"]:
-        raise forbidden("Only the person who entered this record or a Sustainability Manager can change it")
+def _own_or_manager(db: Database, user: Mapping[str, Any], row: Mapping[str, Any]) -> None:
+    """Own entries, or anyone whose role may approve Scope 3 (by default Sustainability Manager + Administrator)."""
+    if "scope3.approve" not in iam.permissions_for(db, user) and row["createdById"] != user["id"]:
+        raise forbidden("Only the person who entered this record or someone who can approve Scope 3 entries can change it")
 
 
 def list_entries(db: Database, month: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
@@ -59,7 +63,7 @@ def update(db: Database, user: Mapping[str, Any], entry_id: str, body: Mapping[s
     row = repo.get(entry_id)
     if row is None:
         raise not_found("Scope 3 entry", entry_id)
-    _own_or_manager(user, row)
+    _own_or_manager(db, user, row)
     if row["status"] == "Approved":
         raise conflict("An approved Scope 3 entry is final and cannot be edited")
     periods.assert_accepts_submissions(db, body["month"])
@@ -77,7 +81,7 @@ def delete(db: Database, user: Mapping[str, Any], entry_id: str) -> None:
     row = repo.get(entry_id)
     if row is None:
         raise not_found("Scope 3 entry", entry_id)
-    _own_or_manager(user, row)
+    _own_or_manager(db, user, row)
     if row["status"] == "Approved":
         raise conflict("An approved Scope 3 entry is final and cannot be deleted")
     repo.delete(entry_id)
@@ -98,7 +102,7 @@ def review(db: Database, user: Mapping[str, Any], entry_id: str, decision: str, 
         raise conflict(f"Reporting period {row['month']} is locked")
     if decision == "Reject" and not comment.strip():
         raise unprocessable("A comment is required when rejecting an entry")
-    out = repo.update(entry_id, {"status": "Approved" if decision == "Approve" else "Rejected", "reviewer": user["name"],
+    out = repo.update(entry_id, {"status": "Approved" if decision == "Approve" else "Rejected", "reviewer": user["name"], "reviewerId": user["id"],
                                  "reviewComment": comment.strip() or None, "reviewedAt": to_iso(utcnow())})
     assert out is not None
     audit(db, user, "Approved" if decision == "Approve" else "Rejected", entry_id, f"Scope 3 entry {decision.lower()}d. {comment.strip()}".strip())

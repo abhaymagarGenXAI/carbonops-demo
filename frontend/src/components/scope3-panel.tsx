@@ -11,6 +11,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { DataTable, type Column } from "@/components/data-table";
 import { EmptyState, Field, SectionCard, StatCard } from "@/components/page-parts";
 import { StatusBadge } from "@/components/status-badge";
+import { BulkConfirm } from "@/components/bulk-confirm";
+import { runBulk } from "@/lib/bulk";
 import { useAuth } from "@/context/AuthContext";
 import { useCreateScope3, useDeleteScope3, useReviewScope3, useScope3, useScope3Categories, useUpdateScope3 } from "@/hooks/useApi";
 import { useStore } from "@/lib/store";
@@ -24,8 +26,9 @@ const unitOf = (u: string) => u.split("/")[1] ?? u;
  *  Entered by engineers/managers, approved by a different manager; only approved entries reach the inventory. */
 export function Scope3Panel() {
   const { user } = useAuth();
-  const { role, factors, facilities, reportingPeriods } = useStore();
-  const isManager = role === "Sustainability Manager" || role === "Administrator";
+  const { factors, facilities, reportingPeriods } = useStore();
+  const { can } = useAuth();
+  const isManager = can("scope3.approve"); // may approve/reject and change anyone's entry
   const { data: entries = [], isLoading } = useScope3();
   const { data: categories = [] } = useScope3Categories();
   const create = useCreateScope3(), update = useUpdateScope3(), remove = useDeleteScope3(), review = useReviewScope3();
@@ -39,6 +42,8 @@ export function Scope3Panel() {
   const [decision, setDecision] = useState<{ entry: Scope3Entry; kind: "Approve" | "Reject" } | null>(null);
   const [comment, setComment] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [bulk, setBulk] = useState<"Approve" | "Reject" | "Delete" | null>(null);
 
   const sources = useMemo(
     () => [...new Map(s3Factors.filter((f) => !form.category || !f.category || f.category === form.category).map((f) => [f.source, f])).values()],
@@ -139,8 +144,33 @@ export function Scope3Panel() {
       </div>
       {isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : (
         <DataTable data={rows} columns={columns} rowKey={(e) => e.id} pageSize={10} onRowClick={setDetail}
+          selection={{
+            selected: picked, onChange: setPicked,
+            isSelectable: (e) => canChange(e) || (isManager && e.status === "Submitted" && e.createdById !== user?.id),
+            actions: (
+              <>
+                {isManager ? <Button size="sm" onClick={() => setBulk("Approve")}><Check className="size-4" /> Approve</Button> : null}
+                {isManager ? <Button size="sm" variant="outline" onClick={() => setBulk("Reject")}><X className="size-4" /> Reject</Button> : null}
+                <Button size="sm" variant="outline" className="text-destructive" onClick={() => setBulk("Delete")}><Trash2 className="size-4" /> Delete</Button>
+              </>
+            ),
+          }}
           searchKeys={(e) => `${e.id} ${e.category} ${e.source} ${e.description} ${e.createdBy}`} searchPlaceholder="Search entry, category or factor…" />
       )}
+
+      <BulkConfirm
+        open={bulk !== null} confirmLabel={bulk ?? ""} comment={bulk === "Reject"} requireComment={bulk === "Reject"}
+        title={`${bulk} ${picked.size} entr${picked.size === 1 ? "y" : "ies"}?`}
+        description={bulk === "Delete" ? "Approved entries and entries you may not change are refused and reported." : bulk === "Approve" ? "Only submitted entries by other people can be approved; the rest are reported. Approved entries are final." : "Each selected entry returns to its author with this reason."}
+        onCancel={() => setBulk(null)}
+        onConfirm={async (note) => {
+          const act = bulk!;
+          const { failed } = await runBulk([...picked], act === "Delete" ? "entr(ies) deleted" : act === "Approve" ? "entr(ies) approved" : "entr(ies) rejected",
+            (id) => (act === "Delete" ? remove.mutateAsync(id) : review.mutateAsync({ id, decision: act, comment: note })));
+          setPicked(new Set(failed.map((f) => f.id)));
+          setBulk(null);
+        }}
+      />
 
       <Dialog open={!!dlg} onOpenChange={(o) => !o && setDlg(null)}>
         <DialogContent className="sm:max-w-lg">

@@ -14,6 +14,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { DataTable, type Column } from "@/components/data-table";
 import { Field, PageHeader, SectionCard, StatCard } from "@/components/page-parts";
 import { StatusBadge } from "@/components/status-badge";
+import { useAuth } from "@/context/AuthContext";
 import { useStore } from "@/lib/store";
 import { type Initiative } from "@/types/domain";
 import { InitiativeAnalysis } from "@/components/initiative-analysis";
@@ -31,7 +32,8 @@ interface DraftErrors {
 
 export default function InitiativesPage() {
   usePageMeta("Decarbonization Initiatives — CarbonOps AI", "Portfolio of emission reduction projects with expected versus actual abatement, investment, ROI and milestone tracking.");
-  const { facilities, facilityName, role } = useStore();
+  const { facilities, allFacilities, facilityName } = useStore();
+  const { can } = useAuth();
 
   const { initiatives, createInitiative } = useStore();
   const [detail, setDetail] = useState<Initiative | null>(null);
@@ -180,7 +182,7 @@ export default function InitiativesPage() {
                   <SelectTrigger className="h-9 w-52"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All facilities</SelectItem>
-                    {facilities.map((f) => <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>)}
+                    {allFacilities.map((f) => <SelectItem key={f.id} value={f.id}>{f.active === false ? `${f.name} (inactive)` : f.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
                 <Select value={status} onValueChange={setStatus}>
@@ -336,7 +338,7 @@ export default function InitiativesPage() {
                   <p className="text-sm text-muted-foreground">{detail.notes || "No notes recorded."}</p>
                 </SectionCard>
 
-                {role === "Sustainability Manager" ? <InitiativeEditor initiative={detail} onSaved={setDetail} /> : null}
+                {can("initiative.manage") ? <InitiativeEditor initiative={detail} onSaved={setDetail} /> : null}
               </div>
             </>
           ) : null}

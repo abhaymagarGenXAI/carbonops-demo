@@ -5,6 +5,8 @@ import {
   MoreHorizontal,
   Pencil,
   Plus,
+  Power,
+  PowerOff,
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -76,16 +78,20 @@ import {
 
 import { StatusBadge } from "@/components/status-badge";
 
+import { useAuth } from "@/context/AuthContext";
 import { useStore } from "@/lib/store";
 import { type Asset } from "@/types/domain";
 import {
   useCreateAsset,
   useCreateFacility,
   useDeleteAsset,
-  useDeleteFacility,
+  useDeactivateFacility,
+  useReactivateFacility,
   useUpdateAsset,
   useUpdateFacility,
 } from "@/hooks/useApi";
+import { AddUnitDialog } from "@/components/add-unit-dialog";
+import { MasterDataExcel } from "@/components/master-data-excel";
 import { usePageMeta } from "@/hooks/use-page-meta";
 
 type DbFacility = {
@@ -98,6 +104,7 @@ type DbFacility = {
   units: string[];
   commissioned: string;
   employees: number;
+  active: boolean;
   createdAt: string | null;
   updatedAt: string | null;
 };
@@ -175,11 +182,13 @@ export default function AssetsPage() {
    * Facilities and assets come from FastAPI/MongoDB through TanStack Query (see lib/store.tsx).
    * Mutations below invalidate + refetch those queries, replacing `router.invalidate()`.
    */
-  const { facilities: apiFacilities, assets, role, submissions } = useStore();
+  const { allFacilities: apiFacilities, assets, submissions } = useStore();
+  const { can } = useAuth();
 
   const createFacility = useCreateFacility();
   const updateFacility = useUpdateFacility();
-  const deleteFacility = useDeleteFacility();
+  const deactivateFacility = useDeactivateFacility();
+  const reactivateFacility = useReactivateFacility();
   const createAsset = useCreateAsset();
   const updateAsset = useUpdateAsset();
   const deleteAsset = useDeleteAsset();
@@ -197,6 +206,7 @@ export default function AssetsPage() {
         units: f.units,
         commissioned: f.commissioned,
         employees: f.employees,
+        active: f.active !== false,
         createdAt: f.createdAt ?? null,
         updatedAt: f.updatedAt ?? null,
       })),
@@ -348,35 +358,35 @@ const saveFacility = async () => {
   }
 };
 
-const confirmDeleteFacility = async () => {
-  if (!facilityToDelete) return;
+const activeFacilities = facilities.filter((f) => f.active);
+const [unitFor, setUnitFor] = useState<string | null>(null); // "" = dialog without a preselected facility
 
-  setFacilityDeleting(true);
-
+const confirmDeactivateFacility = async () => {
+  if (!facilityToDeactivate) return;
+  setFacilityBusy(true);
   try {
-    await deleteFacility.mutateAsync(facilityToDelete.facilityId);
-
-    toast.success("Facility deleted", {
-      description: `${facilityToDelete.name} has been removed.`,
+    await deactivateFacility.mutateAsync(facilityToDeactivate.facilityId);
+    toast.success("Facility deactivated", {
+      description: `${facilityToDeactivate.name} is hidden from data entry and dropdowns. Its history is kept.`,
     });
-
-    setFacilityToDelete(null);
-
-    // the mutation already refetched the affected queries
+    setFacilityToDeactivate(null);
   } catch (error) {
-    console.error(
-      "Facility delete failed:",
-      error,
-    );
-
-    toast.error("Failed to delete facility", {
-      description:
-        error instanceof Error
-          ? error.message
-          : "An unexpected error occurred.",
+    toast.error("Could not deactivate facility", {
+      description: error instanceof Error ? error.message : "An unexpected error occurred.",
     });
   } finally {
-    setFacilityDeleting(false);
+    setFacilityBusy(false);
+  }
+};
+
+const doReactivateFacility = async (f: DbFacility) => {
+  try {
+    await reactivateFacility.mutateAsync(f.facilityId);
+    toast.success("Facility reactivated", { description: `${f.name} is available for data entry again.` });
+  } catch (error) {
+    toast.error("Could not reactivate facility", {
+      description: error instanceof Error ? error.message : "An unexpected error occurred.",
+    });
   }
 };
 
@@ -393,15 +403,12 @@ const confirmDeleteFacility = async () => {
 const [assetDeleting, setAssetDeleting] =
   useState(false);
 
-const canCreateAsset =
-  role === "Administrator";
+const canCreateAsset = can("asset.create");
 
-const canEditAsset =
-  role === "Administrator" ||
-  role === "Plant Engineer";
+const canEditAsset = can("asset.edit");
 
-const canDeleteAsset =
-  role === "Administrator";
+const canDeleteAsset = can("asset.delete");
+const canManageFacility = can("facility.manage");
 
   const [facilityDialogOpen, setFacilityDialogOpen] =
   useState(false);
@@ -412,13 +419,13 @@ const [facilityForm, setFacilityForm] =
 const [facilityBeingEdited, setFacilityBeingEdited] =
   useState<DbFacility | null>(null);
 
-const [facilityToDelete, setFacilityToDelete] =
+const [facilityToDeactivate, setFacilityToDeactivate] =
   useState<DbFacility | null>(null);
 
 const [facilitySaving, setFacilitySaving] =
   useState(false);
 
-const [facilityDeleting, setFacilityDeleting] =
+const [facilityBusy, setFacilityBusy] =
   useState(false);
 
 const [facilityErrors, setFacilityErrors] = useState<{
@@ -696,28 +703,49 @@ const [facilityErrors, setFacilityErrors] = useState<{
         title="Facilities & Assets"
         description="Organisational hierarchy and emission-source inventory. Assets drive activity data collection, energy metering and Scope 1/2 boundary definition."
         actions={
-          role === "Administrator" && (
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+            <MasterDataExcel />
+            {(canManageFacility || canCreateAsset) && (
             <div className="flex flex-col gap-2 sm:flex-row">
-              <Button
+              {canManageFacility && (
+                <Button
   variant="outline"
   onClick={openCreateFacility}
 >
   <Plus className="size-4" />
   Create Facility
 </Button>
+              )}
 
-              <Button
-                onClick={() => {
-                  setEditing(emptyAsset(facilities));
-                  setErrors({});
-                }}
-              >
-                <Plus className="size-4" />
-                Create Asset
-              </Button>
+              {canManageFacility && (
+                <Button variant="outline" onClick={() => setUnitFor("")}>
+                  <Plus className="size-4" />
+                  Add Production Unit
+                </Button>
+              )}
+
+              {canCreateAsset && (
+                <Button
+                  onClick={() => {
+                    setEditing(emptyAsset(activeFacilities));
+                    setErrors({});
+                  }}
+                >
+                  <Plus className="size-4" />
+                  Create Asset
+                </Button>
+              )}
             </div>
-          )
+            )}
+          </div>
         }
+      />
+
+      <AddUnitDialog
+        open={unitFor !== null}
+        facilities={activeFacilities.map((f) => ({ id: f.facilityId, name: f.name, units: f.units }))}
+        {...(unitFor ? { facilityId: unitFor } : {})}
+        onClose={() => setUnitFor(null)}
       />
 
       <Tabs defaultValue="inventory">
@@ -739,7 +767,7 @@ const [facilityErrors, setFacilityErrors] = useState<{
             <StatCard
               label="Total assets"
               value={assets.length}
-              hint={`Across ${facilities.length} facilities`}
+              hint={`Across ${activeFacilities.length} active facilities`}
               icon={
                 <Building2 className="size-4" />
               }
@@ -811,7 +839,7 @@ const [facilityErrors, setFacilityErrors] = useState<{
                         key={f.facilityId}
                         value={f.facilityId}
                       >
-                        {f.name}
+                        {f.active ? f.name : `${f.name} (inactive)`}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -902,8 +930,8 @@ const [facilityErrors, setFacilityErrors] = useState<{
     {facilities.map((f) => (
       <SectionCard
         key={f.facilityId}
-        title={f.name}
-        description={`${f.type} · ${f.region} · commissioned ${f.commissioned}`}
+        title={f.active ? f.name : `${f.name} — inactive`}
+        description={`${f.type} · ${f.region} · commissioned ${f.commissioned}${f.active ? "" : " · hidden from data entry, history kept"}`}
       >
         <div className="grid grid-cols-2 gap-3 pb-3">
           <Field
@@ -977,7 +1005,7 @@ const [facilityErrors, setFacilityErrors] = useState<{
           ))}
         </div>
 
-        {role === "Administrator" && (
+        {canManageFacility && (
           <div className="mt-4 flex gap-2 border-t border-border pt-4">
             <Button
               variant="outline"
@@ -990,17 +1018,32 @@ const [facilityErrors, setFacilityErrors] = useState<{
               Edit Facility
             </Button>
 
-            <Button
-              variant="outline"
-              size="sm"
-              className="text-destructive hover:text-destructive"
-              onClick={() =>
-                setFacilityToDelete(f)
-              }
-            >
-              <Trash2 className="size-4" />
-              Delete Facility
-            </Button>
+            {f.active ? (
+              <Button variant="outline" size="sm" onClick={() => setUnitFor(f.facilityId)}>
+                <Plus className="size-4" />
+                Add Unit
+              </Button>
+            ) : null}
+
+            {f.active ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setFacilityToDeactivate(f)}
+              >
+                <PowerOff className="size-4" />
+                Deactivate Facility
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void doReactivateFacility(f)}
+              >
+                <Power className="size-4" />
+                Reactivate Facility
+              </Button>
+            )}
           </div>
         )}
       </SectionCard>
@@ -1214,7 +1257,7 @@ const [facilityErrors, setFacilityErrors] = useState<{
                   </SelectTrigger>
 
                   <SelectContent>
-                    {facilities.map((f) => (
+                    {facilities.filter((f) => f.active || f.facilityId === editing.facilityId).map((f) => (
                       <SelectItem
                         key={f.facilityId}
                         value={f.facilityId}
@@ -1869,64 +1912,39 @@ const [facilityErrors, setFacilityErrors] = useState<{
       </AlertDialog>
 
       <AlertDialog
-  open={!!facilityToDelete}
-  onOpenChange={(open) => {
-    if (!facilityDeleting && !open) {
-      setFacilityToDelete(null);
-    }
-  }}
->
-  <AlertDialogContent>
-    <AlertDialogHeader>
-      <AlertDialogTitle>
-        Delete {facilityToDelete?.name}?
-      </AlertDialogTitle>
-
-      <AlertDialogDescription>
-        This will permanently remove the facility
-        master record from MongoDB.
-
-        {facilityToDelete && (
-          <>
-            {" "}
-            The facility currently has{" "}
-            <strong>
-              {
-                assets.filter(
-                  (a) =>
-                    a.facilityId ===
-                    facilityToDelete.facilityId,
-                ).length
-              }
-            </strong>{" "}
-            registered asset(s).
-          </>
-        )}
-      </AlertDialogDescription>
-    </AlertDialogHeader>
-
-    <AlertDialogFooter>
-      <AlertDialogCancel
-        disabled={facilityDeleting}
-      >
-        Cancel
-      </AlertDialogCancel>
-
-      <AlertDialogAction
-        disabled={facilityDeleting}
-        onClick={(event) => {
-          event.preventDefault();
-          void confirmDeleteFacility();
+        open={!!facilityToDeactivate}
+        onOpenChange={(open) => {
+          if (!facilityBusy && !open) setFacilityToDeactivate(null);
         }}
-        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
       >
-        {facilityDeleting
-          ? "Deleting..."
-          : "Delete facility"}
-      </AlertDialogAction>
-    </AlertDialogFooter>
-  </AlertDialogContent>
-</AlertDialog>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Deactivate {facilityToDeactivate?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The facility is hidden from data entry, dropdowns and the dashboard, and no new submissions, assets,
+              initiatives or Scope 3 entries can be added to it. Its submissions, energy and emission records, assets and
+              reports are kept, and approvals already in progress can still be completed. You can reactivate it at any time.
+              {facilityToDeactivate ? (
+                <>
+                  {" "}It has <strong>{assets.filter((a) => a.facilityId === facilityToDeactivate.facilityId).length}</strong> registered asset(s).
+                </>
+              ) : null}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={facilityBusy}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={facilityBusy}
+              onClick={(event) => {
+                event.preventDefault();
+                void confirmDeactivateFacility();
+              }}
+            >
+              {facilityBusy ? "Deactivating..." : "Deactivate facility"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -49,7 +49,10 @@ import type {
 } from "@/types/domain";
 
 interface StoreValue {
+  /** Active facilities only: use for data entry, dropdowns and the dashboard. */
   facilities: Facility[];
+  /** Every facility including deactivated ones (history, filters, names). */
+  allFacilities: Facility[];
   facilityName: (id: string) => string;
   assets: Asset[];
   submissions: Submission[];
@@ -70,7 +73,7 @@ interface StoreValue {
   currentPeriod: string;
 
   role: AppRole;
-  setRole: (r: AppRole) => void;
+  setRole: (roleId: string) => void; // "Simulate role": the id of the role to preview as
 
   isLoading: boolean;
   error: Error | null;
@@ -101,7 +104,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const periods = useReportingPeriods();
   const workflows = useWorkflows();
   const alerts = useAiAlerts();
-  const users = useUsers(user?.appRole === "Administrator");
+  const users = useUsers((user?.permissions ?? []).includes("user.manage"));
 
   const queries = [facilities, assets, submissions, energy, emissions, initiatives, documents, factors, audit, periods, workflows, alerts];
 
@@ -131,7 +134,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const value = useMemo<StoreValue>(() => {
     const months = periodList.map((p) => p.period);
     return {
-      facilities: facilityList,
+      facilities: facilityList.filter((f) => f.active !== false),
+      allFacilities: facilityList,
       facilityName,
       assets: assets.data ?? EMPTY,
       submissions: submissions.data ?? EMPTY,

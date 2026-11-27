@@ -21,6 +21,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { InventoryExportDialog } from "@/components/inventory-export-dialog";
 import { Scope3Panel } from "@/components/scope3-panel";
 import { FactorAdmin } from "@/components/factor-admin";
+import { ForecastPanel } from "@/components/forecast-panel";
 import { TargetsPanel } from "@/components/targets-panel";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -41,7 +42,7 @@ const SCOPE_COLORS: Record<string, string> = {
 
 export default function CarbonPage() {
   usePageMeta("Carbon Accounting — CarbonOps AI", "Scope 1, 2 and 3 emissions calculated from approved activity data, with factor traceability, variance analysis and reviewer sign-off.");
-  const { currentPeriod, facilities, facilityName, months } = useStore();
+  const { currentPeriod, allFacilities, facilityName, months } = useStore();
 
   const { emissions, setEmissionReview } = useStore();
   const recalc = useRecalculateEmissions();
@@ -205,7 +206,7 @@ export default function CarbonPage() {
           <SelectTrigger className="h-8 w-48" aria-label="Facility"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All facilities</SelectItem>
-            {facilities.map((f) => <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>)}
+            {allFacilities.map((f) => <SelectItem key={f.id} value={f.id}>{f.active === false ? `${f.name} (inactive)` : f.name}</SelectItem>)}
           </SelectContent>
         </Select>
         <span>Applies to the KPIs, overview and ledger. Rejected and draft records are never counted.</span>
@@ -216,6 +217,7 @@ export default function CarbonPage() {
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="ledger">Calculation ledger</TabsTrigger>
           <TabsTrigger value="targets">Targets &amp; baseline</TabsTrigger>
+          <TabsTrigger value="forecast">Forecast</TabsTrigger>
           <TabsTrigger value="scope3">Scope 3</TabsTrigger>
           <TabsTrigger value="factors">Emission factors</TabsTrigger>
         </TabsList>
@@ -254,7 +256,7 @@ export default function CarbonPage() {
                   <PieChart>
                     <Pie data={bySource} dataKey="value" nameKey="name" innerRadius={55} outerRadius={95} paddingAngle={2}>
                       {bySource.map((_, i) => (
-                        <Cell key={i} fill={`var(--chart-${(i % 5) + 1})`} />
+                        <Cell key={i} fill={`var(--chart-${(i % 10) + 1})`} />
                       ))}
                     </Pie>
                     <RTooltip contentStyle={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} formatter={(v, n) => [`${Number(v).toLocaleString("en-IN")} tCO₂e`, n]} />
@@ -324,6 +326,10 @@ export default function CarbonPage() {
 
         <TabsContent value="targets" className="pt-4">
           <TargetsPanel />
+        </TabsContent>
+
+        <TabsContent value="forecast" className="pt-4">
+          <ForecastPanel />
         </TabsContent>
 
         <TabsContent value="scope3" className="pt-4">

@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useOpenNextPeriod, useSetPeriodStatus } from "@/hooks/useApi";
-import { BadgeCheck, Clock, History, ThumbsDown, ThumbsUp } from "lucide-react";
+import { BadgeCheck, Clock, History, Paperclip, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -8,17 +8,21 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { DataTable, type Column } from "@/components/data-table";
+import { BulkConfirm } from "@/components/bulk-confirm";
+import { runBulk } from "@/lib/bulk";
 import { Field, PageHeader, SectionCard, StatCard } from "@/components/page-parts";
 import { StatusBadge } from "@/components/status-badge";
+import { useAuth } from "@/context/AuthContext";
 import { useStore } from "@/lib/store";
 import { type Submission } from "@/types/domain";
 import { ValidationRulesPanel } from "@/components/validation-rules-panel";
-import { EvidencePanel } from "@/components/evidence-panel";
+import { EVIDENCE_ACCEPT, EvidencePanel } from "@/components/evidence-panel";
+import { useDeleteDocument, useUploadDocument } from "@/hooks/useApi";
 import { usePageMeta } from "@/hooks/use-page-meta";
 
 export default function ApprovalsPage() {
   usePageMeta("Validation & Approvals — CarbonOps AI", "Reviewer queue for monthly activity submissions with validation results, approval history and workflow SLAs.");
-  const { facilities, facilityName, workflows, reportingPeriods } = useStore();
+  const { allFacilities, facilityName, workflows, reportingPeriods } = useStore();
   const openNext = useOpenNextPeriod();
   const setPeriodStatus = useSetPeriodStatus();
   const periodAction = async (fn: () => Promise<{ period: string; status: string }>, ok: string) => {
@@ -31,9 +35,17 @@ export default function ApprovalsPage() {
   };
 
   const { submissions, setSubmissionStatus, audit } = useStore();
+  const { user: me } = useAuth();
   const [detail, setDetail] = useState<Submission | null>(null);
   const [comment, setComment] = useState("");
+  const [files, setFiles] = useState<File[]>([]); // attachments for the decision being made
+  const fileInput = useRef<HTMLInputElement>(null);
+  useEffect(() => setFiles([]), [detail?.id]); // attachments belong to one decision
+  const uploadDoc = useUploadDocument();
+  const removeDoc = useDeleteDocument();
   const [facility, setFacility] = useState("all");
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [bulk, setBulk] = useState<"Approved" | "Rejected" | null>(null);
 
   const queue = useMemo(
     () =>
@@ -52,12 +64,30 @@ export default function ApprovalsPage() {
       toast.error("Comment required", { description: "Provide a reason before rejecting a submission." });
       return;
     }
+    const stored: string[] = [];
     try {
-      await setSubmissionStatus(s.id, status, comment.trim(), s.revision);
-      toast.success(`${s.id} → ${status}`, { description: comment.trim() || "Decision recorded in the audit trail." });
+      // files first, so a rejected file stops the decision; if the decision itself fails the files are removed again
+      try {
+        for (const file of files) {
+          const d = await uploadDoc.mutateAsync({ file, type: "Reviewer attachment", facilityId: s.facilityId, month: s.month, linkedRecord: s.id });
+          stored.push(d.id);
+        }
+      } catch (error) {
+        await Promise.allSettled(stored.map((id) => removeDoc.mutateAsync(id)));
+        throw error;
+      }
+      try {
+        await setSubmissionStatus(s.id, status, comment.trim(), s.revision);
+      } catch (error) {
+        await Promise.allSettled(stored.map((id) => removeDoc.mutateAsync(id)));
+        throw error;
+      }
+      toast.success(`${s.id} → ${status}`, { description: (comment.trim() || "Decision recorded in the audit trail.") + (files.length ? ` · ${files.length} file(s) attached` : "") });
       setComment("");
+      setFiles([]);
       setDetail(null);
     } catch (error) {
+
       toast.error("Decision could not be recorded", { description: error instanceof Error ? error.message : "Unexpected error" });
     }
   };
@@ -108,6 +138,16 @@ export default function ApprovalsPage() {
             rowKey={(s) => s.id}
             onRowClick={setDetail}
             pageSize={8}
+            selection={{
+              selected: picked, onChange: setPicked,
+              isSelectable: (s) => s.submittedById !== me?.id, // segregation of duties: your own submissions need another reviewer
+              actions: (
+                <>
+                  <Button size="sm" onClick={() => setBulk("Approved")}><ThumbsUp className="size-4" /> Approve selected</Button>
+                  <Button size="sm" variant="outline" className="text-destructive" onClick={() => setBulk("Rejected")}>Reject selected</Button>
+                </>
+              ),
+            }}
             emptyTitle="Approval queue is clear"
             emptyHint="No submissions are currently awaiting review for this selection."
             searchKeys={(s) => `${s.id} ${facilityName(s.facilityId)} ${s.submittedBy} ${s.month}`}
@@ -117,7 +157,7 @@ export default function ApprovalsPage() {
                 <SelectTrigger className="h-9 w-52"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All facilities</SelectItem>
-                  {facilities.map((f) => <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>)}
+                  {allFacilities.map((f) => <SelectItem key={f.id} value={f.id}>{f.active === false ? `${f.name} (inactive)` : f.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             }
@@ -264,9 +304,45 @@ export default function ApprovalsPage() {
                       {detail.reviewerComments ? ` Reviewer note: ${detail.reviewerComments}` : ""}
                     </p>
                   </SectionCard>
+                ) : ["Submitted", "Under Review"].includes(detail.status) && detail.submittedById && detail.submittedById === me?.id ? (
+                  <SectionCard title="Reviewer decision" description="Segregation of duties">
+                    <p className="text-sm text-muted-foreground">You submitted this record, so another reviewer must approve, reject or query it.</p>
+                  </SectionCard>
                 ) : ["Submitted", "Under Review"].includes(detail.status) ? (
                 <SectionCard title="Reviewer decision" description="Comments are stored in the audit trail">
                   <Textarea rows={3} placeholder="Reason for approval, rejection or clarification request…" value={comment} onChange={(e) => setComment(e.target.value)} />
+                  <div className="mt-3">
+                    <input
+                      ref={fileInput} type="file" multiple hidden accept={EVIDENCE_ACCEPT} data-testid="decision-files"
+                      onChange={(e) => {
+                        const picked = Array.from(e.target.files ?? []);
+                        if (fileInput.current) fileInput.current.value = "";
+                        const ok = picked.filter((f) => {
+                          const good = /\.(pdf|xlsx|csv|docx|pptx|txt|png|jpe?g)$/i.test(f.name) && f.size <= 20 * 1024 * 1024 && f.size > 0;
+                          if (!good) toast.error(`${f.name} skipped`, { description: "Up to 20 MB." });
+                          return good;
+                        });
+                        setFiles((prev) => [...prev, ...ok].slice(0, 5));
+                      }}
+                    />
+                    <Button type="button" variant="outline" size="sm" disabled={files.length >= 5} onClick={() => fileInput.current?.click()}>
+                      <Paperclip className="size-4" /> Attach files {files.length ? `(${files.length}/5)` : ""}
+                    </Button>
+                    <span className="ml-2 text-xs text-muted-foreground">Up to 20 MB each</span>
+                    {files.length ? (
+                      <ul className="mt-2 space-y-1">
+                        {files.map((f, i) => (
+                          <li key={`${f.name}-${i}`} className="flex items-center gap-2 text-xs">
+                            <Paperclip className="size-3.5 text-muted-foreground" />
+                            <span className="min-w-0 flex-1 truncate">{f.name}</span>
+                            <button type="button" aria-label={`Remove ${f.name}`} className="text-muted-foreground hover:text-destructive" onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))}>
+                              <X className="size-3.5" />
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
                   <div className="mt-3 flex flex-wrap gap-2">
                     <Button size="sm" onClick={() => act(detail, "Approved")}><ThumbsUp className="size-4" /> Approve</Button>
                     <Button size="sm" variant="outline" onClick={() => act(detail, "Rejected")}><ThumbsDown className="size-4" /> Reject</Button>
@@ -279,6 +355,21 @@ export default function ApprovalsPage() {
           ) : null}
         </SheetContent>
       </Sheet>
+      <BulkConfirm
+        open={bulk !== null} confirmLabel={bulk === "Approved" ? "Approve" : "Reject"} comment requireComment={bulk === "Rejected"}
+        title={`${bulk === "Approved" ? "Approve" : "Reject"} ${picked.size} submission(s)?`}
+        description={bulk === "Approved" ? "Approved submissions are final and release their figures to the carbon ledger. Each one is checked on its own; any that cannot be approved are reported." : "Every selected submission is sent back to its data owner with this reason."}
+        onCancel={() => setBulk(null)}
+        onConfirm={async (note) => {
+          const status = bulk!;
+          const { failed } = await runBulk([...picked], status === "Approved" ? "submission(s) approved" : "submission(s) rejected", (id) => {
+            const s = submissions.find((x) => x.id === id)!;
+            return setSubmissionStatus(id, status, note, s.revision);
+          });
+          setPicked(new Set(failed.map((f) => f.id)));
+          setBulk(null);
+        }}
+      />
     </div>
   );
 }

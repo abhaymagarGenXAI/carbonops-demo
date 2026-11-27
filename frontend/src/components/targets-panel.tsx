@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { SectionCard, StatCard } from "@/components/page-parts";
 import { StatusBadge } from "@/components/status-badge";
 import { useSaveBaseline, useSaveTargets, useTargets } from "@/hooks/useApi";
+import { useAuth } from "@/context/AuthContext";
 import { useStore } from "@/lib/store";
 import type { EmissionTarget, TargetScope } from "@/types/domain";
 
@@ -15,8 +16,9 @@ const SCOPES: TargetScope[] = ["Total", "Scope 1", "Scope 2"];
 const fmt = (n: number | null | undefined, d = 0) => (n == null ? "—" : n.toLocaleString("en-IN", { maximumFractionDigits: d }));
 
 export function TargetsPanel() {
-  const { role, reportingPeriods } = useStore();
-  const canEdit = role === "Sustainability Manager";
+  const { reportingPeriods } = useStore();
+  const { can } = useAuth();
+  const canEdit = can("target.manage");
   const { data, isLoading } = useTargets();
   const saveBaseline = useSaveBaseline();
   const saveTargets = useSaveTargets();

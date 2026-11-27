@@ -8,6 +8,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
+from app.utils.safe_cell import append_row
+
 FIELDS: list[tuple[str, str]] = [
     ("productionVolume", "Production volume (boe)"), ("electricity", "Electricity (kWh)"), ("diesel", "Diesel (L)"),
     ("naturalGas", "Natural gas (SCM)"), ("steam", "Steam (t)"), ("water", "Water (m³)"), ("flareGas", "Flare gas (SCM)"),
@@ -26,7 +28,7 @@ def submissions_xlsx(rows: Sequence[dict[str, Any]], facility_names: dict[str, s
         c.font = Font(bold=True)
     for s in rows:
         d = s.get("data", {})
-        ws.append([
+        append_row(ws, [
             s["id"], facility_names.get(s["facilityId"], s["facilityId"]), s["unit"], s["month"], s["status"],
             s.get("validation", ""), s.get("completeness", 0), s.get("submittedBy", ""), s.get("reviewer", ""),
             s.get("reviewerComments", ""), str(s.get("updatedAt", "")), evidence.get((s["facilityId"], s["month"]), 0),

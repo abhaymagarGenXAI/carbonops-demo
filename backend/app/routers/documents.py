@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, File, Form, UploadFile, status
 from fastapi.responses import FileResponse
 
-from app.core.deps import ADMINISTRATOR, SUSTAINABILITY_MANAGER, CurrentUser, Db, require_roles
+from app.core.deps import CurrentUser, Db, require_permission
 from app.repositories.document import DocumentRepository
 from app.core.config import get_settings
 from app.schemas.common import MONTH_PATTERN, DeleteResult
@@ -21,6 +21,11 @@ def list_documents(
 ):
     filters = {k: v for k, v in {"facilityId": facility_id, "month": month, "type": type}.items() if v}
     return DocumentRepository(db).list(filters)
+
+
+@router.get("/repository", summary="Every document with the record it is attached to (needs page.documents)")
+def repository(db: Db, _: dict = Depends(require_permission("page.documents"))):
+    return svc.repository(db)
 
 
 @router.post("", response_model=DocumentOut, status_code=status.HTTP_201_CREATED, summary="Register document metadata")

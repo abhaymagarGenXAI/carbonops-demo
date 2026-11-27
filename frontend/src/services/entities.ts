@@ -12,10 +12,15 @@ import type {
   Asset,
   AuditEntry,
   DocumentRec,
+  DocumentRepository,
+  MasterImportReport,
   ImportCommitResult,
   ImportPreview,
   EmissionFactor,
   EmissionFactorInput,
+  ForecastView,
+  AssistantStatus,
+  AssistantAnswer,
   Scope3Entry,
   Scope3Input,
   EmissionRecord,
@@ -30,6 +35,11 @@ import type {
   Submission,
   SubmissionSavePayload,
   UserRec,
+  UserCreateInput,
+  UserChanges,
+  RoleRec,
+  RoleInput,
+  PermissionRec,
 } from "@/types/domain";
 import { saveBlob } from "@/lib/csv";
 import { api } from "./api";
@@ -50,7 +60,31 @@ export const facilitiesApi = {
   list: () => data(api.get<Facility[]>("/facilities")),
   create: (body: FacilityInput) => data(api.post<Facility>("/facilities", body)),
   update: (id: string, changes: FacilityChanges) => data(api.patch<Facility>(`/facilities/${enc(id)}`, changes)),
-  remove: (id: string) => data(api.delete<DeleteResult>(`/facilities/${enc(id)}`)),
+  addUnit: (id: string, name: string) => data(api.post<Facility>(`/facilities/${enc(id)}/units`, { name })),
+  deactivate: (id: string) => data(api.post<Facility>(`/facilities/${enc(id)}/deactivate`)),
+  reactivate: (id: string) => data(api.post<Facility>(`/facilities/${enc(id)}/reactivate`)),
+};
+
+const fileName = (res: { headers: Record<string, unknown> }, fallback: string) =>
+  /filename="?([^";]+)"?/.exec(String(res.headers["content-disposition"] ?? ""))?.[1] ?? fallback;
+
+/** Excel upload / export of facilities and assets. */
+export const masterDataApi = {
+  template: async () => {
+    const res = await api.get<Blob>("/master-data/template", { responseType: "blob" });
+    saveBlob(res.data, fileName(res, "facilities-assets-template.xlsx"));
+  },
+  export: async () => {
+    const res = await api.get<Blob>("/master-data/export", { responseType: "blob", timeout: 120_000 });
+    saveBlob(res.data, fileName(res, "facilities-assets.xlsx"));
+  },
+  /** dryRun=true only checks the file; dryRun=false saves it (all rows valid or nothing). */
+  import: (file: File, dryRun: boolean) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("dryRun", String(dryRun));
+    return data(api.post<MasterImportReport>("/master-data/import", fd, { headers: { "Content-Type": "multipart/form-data" }, timeout: 120_000 }));
+  },
 };
 
 export const assetsApi = {
@@ -140,6 +174,7 @@ export const initiativesApi = {
 
 export const documentsApi = {
   list: () => data(api.get<DocumentRec[]>("/documents")),
+  repository: () => data(api.get<DocumentRepository>("/documents/repository")),
   upload: (v: { file: File; type: string; facilityId: string; month: string; linkedRecord?: string }) => {
     const fd = new FormData();
     fd.append("file", v.file);
@@ -158,6 +193,22 @@ export const documentsApi = {
 
 export const usersApi = {
   list: () => data(api.get<UserRec[]>("/users")),
+  create: (body: UserCreateInput) => data(api.post<UserRec>("/users", body)),
+  update: (id: string, changes: UserChanges) => data(api.patch<UserRec>(`/users/${enc(id)}`, changes)),
+  remove: (id: string) => data(api.delete<{ id: string; deleted: boolean }>(`/users/${enc(id)}`)),
+  resetPassword: (id: string, newPassword: string) => api.put(`/users/${enc(id)}/password`, { newPassword }).then(() => undefined),
+  setAccess: (id: string, body: { roleId: string; facilityIds: string[] }) =>
+    data(api.put<UserRec>(`/users/${enc(id)}/access`, body)),
+  setStatus: (id: string, status: UserRec["status"]) => data(api.patch<UserRec>(`/users/${enc(id)}`, { status })),
+};
+
+export const rolesApi = {
+  list: () => data(api.get<RoleRec[]>("/roles")),
+  permissions: () => data(api.get<PermissionRec[]>("/permissions")),
+  create: (body: RoleInput) => data(api.post<RoleRec>("/roles", body)),
+  update: (id: string, changes: { name?: string; description?: string }) => data(api.patch<RoleRec>(`/roles/${enc(id)}`, changes)),
+  setPermissions: (id: string, permissions: string[]) => data(api.put<RoleRec>(`/roles/${enc(id)}/permissions`, { permissions })),
+  remove: (id: string) => data(api.delete<{ id: string; deleted: boolean }>(`/roles/${enc(id)}`)),
 };
 
 export const auditApi = {
@@ -172,6 +223,9 @@ export const periodsApi = {
 
 export const alertsApi = {
   list: (period?: string) => data(api.get<AiAlert[]>("/alerts", { params: period ? { period } : undefined })),
+  /** Permanently discards an alert (administrator permission alert.discard). */
+  discard: (id: string, period?: string) =>
+    data(api.delete<{ id: string; discarded: boolean }>(`/alerts/${enc(id)}`, { params: period ? { period } : undefined })),
 };
 
 const inventoryParams = (q: InventoryQuery) =>
@@ -205,4 +259,13 @@ export const adminToolsApi = {
   status: () => data(api.get<{ connected: boolean; facilityCount: number }>("/admin/db/status")),
   crudTest: () => data(api.post<Record<string, unknown>>("/admin/db/crud-test")),
   seedFacilities: () => data(api.post<unknown[]>("/admin/db/seed-facilities")),
+};
+
+export const forecastApi = {
+  get: (horizon = 12) => data(api.get<ForecastView>("/forecast", { params: { horizon } })),
+};
+
+export const assistantApi = {
+  status: () => data(api.get<AssistantStatus>("/assistant/status")),
+  ask: (question: string) => data(api.post<AssistantAnswer>("/assistant/ask", { question }, { timeout: 300_000 })),
 };

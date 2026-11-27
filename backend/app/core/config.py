@@ -41,8 +41,17 @@ class Settings(BaseSettings):
     # --- file storage / import (local disk; nothing leaves the server) ---
     upload_dir: str = "data/uploads"
     max_upload_mb: int = 20
+    # Optional ClamAV (free) scan of stored evidence files. Empty host = scanning off. When set, an unreachable scanner REFUSES uploads.
+    clamav_host: str = ""
+    clamav_port: int = 3310
     max_import_mb: int = 5
     max_import_rows: int = 500
+
+    # --- local AI assistant (Ollama; nothing leaves the machine) -------------------
+    # Default model: Qwen2.5-7B-Instruct — Apache-2.0 licence, supports tool calling. `ollama pull qwen2.5:7b`.
+    ollama_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen2.5:7b"
+    ollama_timeout_s: int = 300
 
     # --- misc -----------------------------------------------------------
     app_timezone: str = "Asia/Kolkata"

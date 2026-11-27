@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import Response
 
-from app.core.deps import PLANT_ENGINEER, SUSTAINABILITY_MANAGER, CurrentUser, Db, require_roles
+from app.core.deps import CurrentUser, Db, require_permission
 from app.repositories.submission import SubmissionRepository
 from app.core.config import get_settings
 from app.schemas.common import MONTH_PATTERN
@@ -58,7 +58,7 @@ def import_template(_: CurrentUser):
 @router.post("/import/preview", response_model=ImportPreviewOut, summary="Parse and validate a CSV/XLSX file (writes nothing)")
 def import_preview(
     db: Db,
-    user: dict = Depends(require_roles(PLANT_ENGINEER)),
+    user: dict = Depends(require_permission("import.run")),
     file: UploadFile = File(...),
     facility_id: str | None = Form(None, alias="facilityId"),
     month: str | None = Form(None, pattern=MONTH_PATTERN),
@@ -69,7 +69,7 @@ def import_preview(
 
 
 @router.post("/import", response_model=ImportCommitOut, summary="Save previewed rows as drafts or submissions")
-def import_commit(body: ImportCommitRequest, db: Db, user: dict = Depends(require_roles(PLANT_ENGINEER))):
+def import_commit(body: ImportCommitRequest, db: Db, user: dict = Depends(require_permission("import.run"))):
     return import_svc.commit(db, user, body)
 
 
@@ -82,12 +82,12 @@ def get_submission(submission_id: str, db: Db, _: CurrentUser):
 
 
 @router.post("", response_model=SubmissionOut, summary="Save draft or submit for review (upsert by facility + month)")
-def save_submission(body: SubmissionSave, db: Db, user: dict = Depends(require_roles(PLANT_ENGINEER))):
+def save_submission(body: SubmissionSave, db: Db, user: dict = Depends(require_permission("activity.submit"))):
     return svc.save_submission(db, user, body)
 
 
 @router.post("/{submission_id}/review", response_model=SubmissionOut, summary="Approve / reject / request clarification")
 def review_submission(
-    submission_id: str, body: ReviewRequest, db: Db, user: dict = Depends(require_roles(SUSTAINABILITY_MANAGER))
+    submission_id: str, body: ReviewRequest, db: Db, user: dict = Depends(require_permission("activity.review"))
 ):
     return svc.review_submission(db, user, submission_id, body)

@@ -9,6 +9,7 @@ from app.repositories.emission import EmissionRecordRepository
 from app.repositories.facility import FacilityRepository
 from app.repositories.reference import ReferenceRepository
 from app.services import targets_engine as te
+from app.services import facilities as facilities_svc
 from app.services.common import audit, conflict, unprocessable
 from app.utils.time import to_display, utcnow
 
@@ -25,7 +26,7 @@ def _save(db: Database, doc: dict[str, Any]) -> None:
 
 
 def _facility_ids(db: Database) -> list[str]:
-    return [f["id"] for f in FacilityRepository(db).list()]
+    return [f["id"] for f in facilities_svc.active_facilities(db)]  # completeness is judged on the current boundary
 
 
 def _agg(db: Database):

@@ -18,7 +18,9 @@ from typing import Any
 from pymongo.database import Database
 
 import datetime as dt
+import hashlib
 
+from app.db import collections as C
 from app.repositories.asset import AssetRepository
 from app.repositories.facility import FacilityRepository
 from app.repositories.reference import ReferenceRepository
@@ -67,7 +69,32 @@ def _default_period(periods: list[dict[str, Any]]) -> dict[str, Any] | None:
     return review[-1] if review else None
 
 
+def fingerprint(alert: dict[str, Any]) -> str:
+    """Identity of an alert's CONTENT. A discard only covers this exact condition: if the data changes so the alert reads
+    differently (new figures, a new rejection comment) it is a new alert and shows up again."""
+    return hashlib.sha1(f"{alert['title']}|{alert['detail']}|{alert['severity']}".encode()).hexdigest()[:16]
+
+
 def build_alerts(db: Database, period: str | None = None) -> list[dict[str, Any]]:
+    """Live alerts minus the ones an Administrator has discarded (see `discard`)."""
+    gone = {(d["alertId"], d["fingerprint"]) for d in db[C.ALERT_DISMISSALS].find({}, {"_id": 0, "alertId": 1, "fingerprint": 1})}
+    return [a for a in _compute(db, period) if (a["id"], fingerprint(a)) not in gone]
+
+
+def discard(db: Database, user: dict[str, Any], alert_id: str, period: str | None = None) -> dict[str, Any] | None:
+    """Permanently discard one alert (stored as a dismissal record; the alert is never shown again unless its content changes)."""
+    alert = next((a for a in build_alerts(db, period) if a["id"] == alert_id), None)
+    if alert is None:
+        return None
+    db[C.ALERT_DISMISSALS].insert_one({
+        "alertId": alert["id"], "fingerprint": fingerprint(alert), "kind": alert.get("kind", ""), "severity": alert["severity"],
+        "title": alert["title"], "detail": alert["detail"], "period": period, "dismissedBy": user["name"], "dismissedById": user["id"],
+        "dismissedAt": utcnow(),
+    })
+    return alert
+
+
+def _compute(db: Database, period: str | None = None) -> list[dict[str, Any]]:
     """`period` selects the reporting month for the period-specific checks (overdue deadlines, data anomalies);
     default = the open / latest in-review period. Rejections and rework requests are action items for the data owner
     in *any* unlocked period, so they are always listed; inspection alerts do not depend on a period."""
@@ -83,7 +110,7 @@ def build_alerts(db: Database, period: str | None = None) -> list[dict[str, Any]
         by_fac.setdefault(s["facilityId"], []).append(s)
     due_of = {p["period"]: p for p in periods}
 
-    alerts: list[dict[str, Any]] = _inspection_alerts(db, facilities, today, config.inspection_interval_days)
+    alerts: list[dict[str, Any]] = _inspection_alerts(db, [f for f in facilities if f.get("active", True) is not False], today, config.inspection_interval_days)
 
     # --- action items for the data owner, any unlocked period
     for fid, subs in by_fac.items():
@@ -114,6 +141,8 @@ def build_alerts(db: Database, period: str | None = None) -> list[dict[str, Any]
     # --- period-specific checks
     if chosen is not None and chosen.get("status") != "Locked":
         for f in facilities:
+            if f.get("active", True) is False:
+                continue  # a deactivated facility is no longer expected to report
             subs = by_fac.get(f["id"], [])
             sub = next((x for x in subs if x["month"] == chosen["period"]), None)
             tag = f"{f['name']} · {chosen['period']}"

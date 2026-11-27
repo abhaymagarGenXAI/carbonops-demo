@@ -2,7 +2,6 @@ import { useEffect, type ReactNode } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
-import type { AppRole } from "@/types/domain";
 
 export function FullPageSpinner({ label = "Loading…" }: { label?: string }) {
   return (
@@ -46,8 +45,8 @@ function Denied() {
   return <Navigate to="/" replace />;
 }
 
-/** Route guard: renders the nested route only if the active role is allowed. */
-export function RoleRoute({ allow }: { allow: readonly AppRole[] }) {
-  const { role } = useAuth();
-  return allow.includes(role) ? <Outlet /> : <Denied />;
+/** Route guard: renders the nested route only if the active role's permissions open this path (see access.ts). */
+export function RoleRoute({ path }: { path: string }) {
+  const { canOpen } = useAuth();
+  return canOpen(path) ? <Outlet /> : <Denied />;
 }

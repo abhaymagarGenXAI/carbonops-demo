@@ -5,7 +5,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, status
 from pydantic import Field
 
-from app.core.deps import SUSTAINABILITY_MANAGER, CurrentUser, Db, require_roles
+from app.core.deps import CurrentUser, Db, require_permission
 from app.schemas.common import DATE_PATTERN, CamelModel
 from app.services import periods as svc
 
@@ -36,10 +36,10 @@ def list_periods(db: Db, _: CurrentUser):
 
 
 @router.post("", response_model=PeriodOut, status_code=status.HTTP_201_CREATED, summary="Open the next reporting period")
-def open_next(body: OpenNextRequest, db: Db, user: dict = Depends(require_roles(SUSTAINABILITY_MANAGER))):
+def open_next(body: OpenNextRequest, db: Db, user: dict = Depends(require_permission("period.manage"))):
     return svc.open_next_period(db, user, submission_due=body.submission_due, approval_due=body.approval_due)
 
 
 @router.post("/{period}/status", response_model=PeriodOut, summary="Move a period to In Review or Locked")
-def set_status(period: str, body: StatusRequest, db: Db, user: dict = Depends(require_roles(SUSTAINABILITY_MANAGER))):
+def set_status(period: str, body: StatusRequest, db: Db, user: dict = Depends(require_permission("period.manage"))):
     return svc.set_status(db, user, period, body.status)

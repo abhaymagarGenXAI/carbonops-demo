@@ -166,11 +166,10 @@ def test_commit_saves_through_normal_path_with_emissions_and_reports_failures(cl
     p = _preview(client, eng, _csv(OK, OK.replace("2026-07", "2026-08"))).json()
     rows = [{"facilityId": r["facilityId"], "unit": r["unit"], "month": r["month"], "data": r["data"]} for r in p["rows"]]
     rows.append({**rows[0], "month": "2026-03"})  # locked -> fails alone, others still saved
-    rows.append(rows[0])  # duplicate in the same import
     res = client.post(f"{API}/submissions/import", headers=eng, json={"status": "Submitted", "rows": rows}).json()
-    assert res["saved"] == 2 and res["failed"] == 2
-    assert [x["ok"] for x in res["results"]] == [True, True, False, False]
-    assert "locked" in res["results"][2]["detail"] and "Duplicate" in res["results"][3]["detail"]
+    assert res["saved"] == 2 and res["failed"] == 1
+    assert [x["ok"] for x in res["results"]] == [True, True, False]
+    assert "locked" in res["results"][2]["detail"]
     sub = client.get(f"{API}/submissions/SUB-KGB-202607", headers=eng).json()
     assert sub["status"] == "Submitted" and sub["data"]["electricity"] == 6120000 and sub["submittedBy"]
     em = client.get(f"{API}/emission-records", headers=mgr, params={"facility_id": "FAC-004", "month": "2026-08"}).json()
@@ -189,3 +188,22 @@ def test_commit_as_draft_and_schema_rejection(client):
     bad = {**row, "data": {**row["data"], "electricity": -1}}
     assert client.post(f"{API}/submissions/import", headers=eng, json={"rows": [bad]}).status_code == 422
     assert client.post(f"{API}/submissions/import", headers=eng, json={"rows": []}).status_code == 422
+
+
+def test_several_unit_rows_of_one_facility_month_become_one_multi_unit_submission(client):
+    eng = auth_headers(client, ENGINEER)
+    open_periods(client, "2026-08")
+    units = next(f for f in client.get(f"{API}/facilities", headers=eng).json() if f["id"] == "FAC-004")["units"]
+    assert len(units) >= 2
+    a = OK.replace("Vashishta Field", units[0]).replace("2026-07", "2026-08")
+    b = OK.replace("Vashishta Field", units[1]).replace("2026-07", "2026-08")
+    p = _preview(client, eng, _csv(a, b)).json()
+    assert p["importableRows"] == 2 and p["errorRows"] == 0  # two units of the same month are NOT duplicates
+    dup = _preview(client, eng, _csv(a, a)).json()
+    assert dup["errorRows"] == 1 and "Duplicate" in dup["rows"][1]["errors"][0]
+    rows = [{"facilityId": r["facilityId"], "unit": r["unit"], "month": r["month"], "data": r["data"]} for r in p["rows"]]
+    res = client.post(f"{API}/submissions/import", headers=eng, json={"status": "Draft", "rows": rows}).json()
+    assert res["saved"] == 1 and res["failed"] == 0
+    sub = client.get(f"{API}/submissions/{res['results'][0]['submissionId']}", headers=eng).json()
+    assert [u["unit"] for u in sub["unitData"]] == units[:2]
+    assert sub["data"]["electricity"] == 2 * 6120000

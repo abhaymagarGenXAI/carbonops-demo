@@ -48,11 +48,11 @@ def variance_pct(current: float, previous: float | None) -> float:
     return round((current - previous) / previous * 100, 1)
 
 
-def classify(submission_status: str, quantity: float, previous: float | None, variance: float) -> str:
+def classify(submission_status: str, quantity: float, previous: float | None, variance: float, band: float = VARIANCE_BAND_PCT) -> str:
     """Missing > Anomaly > Pending > Validated."""
     if quantity == 0 and previous:
         return "Missing"
-    if abs(variance) > VARIANCE_BAND_PCT:
+    if abs(variance) > band:
         return "Anomaly"
     if submission_status != "Approved":
         return "Pending"  # not yet signed off (draft / submitted / under review / rejected)
@@ -64,7 +64,8 @@ def energy_gj(stream: Stream, quantity: float) -> float | None:
 
 
 def derive_records(
-    *, facility_id: str, facility_code: str, submission: Mapping[str, Any], prev_data: Mapping[str, Any] | None
+    *, facility_id: str, facility_code: str, submission: Mapping[str, Any], prev_data: Mapping[str, Any] | None,
+    band: float = VARIANCE_BAND_PCT,
 ) -> list[dict[str, Any]]:
     """The five derived fields-set of one facility-month (no meter/invoice/cost — those are user-owned)."""
     out = []
@@ -75,7 +76,7 @@ def derive_records(
         out.append({
             "id": record_id(facility_code, st, submission["month"]), "facilityId": facility_id,
             "month": submission["month"], "stream": st.name, "quantity": qty, "unit": st.unit,
-            "variance": var, "validation": classify(submission["status"], qty, prev, var),
+            "variance": var, "validation": classify(submission["status"], qty, prev, var, band),
             "energyGj": energy_gj(st, qty), "submissionId": submission["id"],
             "excluded": submission["status"] in EXCLUDED_STATUSES, "submissionStatus": submission["status"],
         })

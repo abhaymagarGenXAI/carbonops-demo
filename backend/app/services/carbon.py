@@ -12,7 +12,7 @@ from app.repositories.facility import FacilityRepository
 from app.repositories.reference import ReferenceRepository
 from app.repositories.submission import SubmissionRepository
 from app.services import carbon_engine as ce
-from app.services import energy
+from app.services import energy, masters
 from app.services.common import audit, conflict, unprocessable
 from app.utils.time import to_display, utcnow
 
@@ -43,6 +43,7 @@ def _build(db: Database, sub: Mapping[str, Any], factors: list[Mapping[str, Any]
     records, problems = ce.build_records(
         facility_id=sub["facilityId"], facility_code=facility["code"], month=sub["month"],
         submission_id=sub["id"], submission_status=sub["status"], data=sub["data"], factors=factors,
+        source_ids=masters.source_ids(db),
     )
     return facility, records, problems
 
@@ -140,7 +141,7 @@ def recalculate(
                 repo.create({**rec, "prevCo2e": prev, "calculatedAt": stamp, "comments": []})
             elif action == "update":
                 prev = _prev_co2e(repo, facility["code"], rec["month"], idx, rec["co2e"])
-                changes = {k: rec[k] for k in ("activityValue", "factor", "factorUnit", "factorRef", "co2e", *TRACE_FIELDS[:4])}
+                changes = {k: rec[k] for k in ("activityValue", "factor", "factorUnit", "factorRef", "co2e", *TRACE_FIELDS[:4], "factorVersionId", "emissionSourceId")}
                 changes.update(prevCo2e=prev, calculatedAt=stamp)
                 if old.get("reviewStatus") == "Approved":
                     changes["reviewStatus"] = "Under Review"
@@ -150,7 +151,7 @@ def recalculate(
                 if changes.get("reviewStatus") == "Under Review":
                     reopened.add(sub["id"])
             else:  # link: numbers identical, only backfill traceability
-                repo.update(rec["id"], {k: rec[k] for k in TRACE_FIELDS[:4]} | {"calculatedAt": stamp})
+                repo.update(rec["id"], {k: rec[k] for k in (*TRACE_FIELDS[:4], "factorVersionId", "emissionSourceId")} | {"calculatedAt": stamp})
             _relink_next_month(repo, facility["code"], rec["month"], idx, rec["co2e"])
 
     # The submission is the unit of approval: a record sent back for re-approval must send its submission back too, otherwise the
@@ -182,7 +183,8 @@ def validate_factor_definition(db: Database, data: Mapping[str, Any], self_id: s
         ce.validate_factor(data["source"], data["scope"], data["unit"])
     except ce.FactorError as exc:
         raise unprocessable(str(exc)) from exc
-    clash = {"source": data["source"], "validFrom": data["validFrom"]}
+    sid = masters.resolve_source(db, data["source"], data["scope"], data.get("category"), create=False)
+    clash: dict[str, Any] = {"emissionSourceId": sid, "validFrom": data["validFrom"]} if sid else {"source": data["source"], "validFrom": data["validFrom"]}
     if self_id:
         clash["factorId"] = {"$ne": self_id}  # type: ignore[assignment]
     if EmissionFactorRepository(db).col.find_one(clash):
@@ -213,7 +215,8 @@ def supersede_older(db: Database, factor: Mapping[str, Any]) -> None:
     """A newly active factor retires the older active versions of the same source."""
     if factor.get("status") != "Active":
         return
+    sid = factor.get("emissionSourceId")
     EmissionFactorRepository(db).col.update_many(
-        {"source": factor["source"], "status": "Active", "validFrom": {"$lt": factor["validFrom"]}, "factorId": {"$ne": factor["id"]}},
+        {**({"emissionSourceId": sid} if sid else {"source": factor["source"]}), "status": "Active", "validFrom": {"$lt": factor["validFrom"]}, "factorId": {"$ne": factor["id"]}},
         {"$set": {"status": "Superseded", "updatedAt": utcnow()}},
     )

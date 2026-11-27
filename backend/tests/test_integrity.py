@@ -46,12 +46,9 @@ def test_r02_facility_code_must_be_unique_and_is_frozen_once_used(client):
 
 
 # ---------------------------------------------------------------- R-03 (FAC-14, FAC-15, ADM-03)
-def test_r03_facility_with_dependents_cannot_be_deleted(client):
+def test_r03_facilities_cannot_be_deleted_only_deactivated(client):
     adm = auth_headers(client, ADMIN)
-    r = client.delete(f"{API}/facilities/FAC-001", headers=adm)
-    assert r.status_code == 409 and "referenced" in r.json()["detail"].lower()
-    made = client.post(f"{API}/facilities", headers=adm, json=FAC).json()
-    assert client.delete(f"{API}/facilities/{made['id']}", headers=adm).status_code == 200   # unused -> allowed
+    assert client.delete(f"{API}/facilities/FAC-001", headers=adm).status_code == 405   # no delete option; see tests/test_facility_deactivation.py
 
 
 def test_r03_unit_in_use_cannot_be_removed_or_renamed(client):
@@ -62,30 +59,23 @@ def test_r03_unit_in_use_cannot_be_removed_or_renamed(client):
     assert client.patch(f"{API}/facilities/FAC-001", headers=adm, json={"units": units + ["Bombay High North", "Extra"]}).status_code == 200
 
 
-def test_r03_seed_tool_does_not_resurrect_deleted_facilities(client):
+def test_r03_seed_tool_leaves_existing_facilities_alone(client):
     adm = auth_headers(client, ADMIN)
     made = client.post(f"{API}/facilities", headers=adm, json={**FAC, "id": "FAC-099"}).json()
-    client.delete(f"{API}/facilities/{made['id']}", headers=adm)
-    client.post(f"{API}/admin/db/seed-facilities", headers=adm)
-    assert client.get(f"{API}/facilities/FAC-099", headers=adm).status_code == 404
-    # deleting an unreferenced seeded facility must not be undone by the tool either
-    client.post(f"{API}/facilities", headers=adm, json={**FAC, "id": "FAC-005", "code": "ZZZ"})
-    client.delete(f"{API}/facilities/FAC-004", headers=adm)           # KGB has no submissions? may be refused if it does
     ids = {f["id"] for f in client.get(f"{API}/facilities", headers=adm).json()}
     client.post(f"{API}/admin/db/seed-facilities", headers=adm)
-    after = {f["id"] for f in client.get(f"{API}/facilities", headers=adm).json()}
-    assert after == ids
+    assert {f["id"] for f in client.get(f"{API}/facilities", headers=adm).json()} == ids and made["id"] in ids
 
 
 # ---------------------------------------------------------------- R-04 (RBAC-09, RBAC-10)
-@pytest.mark.xfail(strict=True, reason="R-04 confirmed open: facility scoping is an RBAC change that needs a product decision")
-def test_r04_engineer_is_limited_to_their_own_facility(client):
-    eng = auth_headers(client, ENGINEER)                                  # S. Nair -> Mumbai Offshore
+def test_r04_decision_every_facility_stays_visible_and_editable_for_engineers(client):
+    """Product decision (Stage 1): facility scoping is NOT enforced - plant engineers keep access to all facilities.
+    Facility assignments are stored (user_facilities) but informational; see test_iam.py."""
+    eng = auth_headers(client, ENGINEER)                                  # S. Nair -> assigned Mumbai Offshore
     assert submit(client, eng, "FAC-001").status_code == 200
-    assert submit(client, eng, "FAC-002", "LPG Train A").status_code == 403
-    assert client.patch(f"{API}/assets/MOF-AST-101", headers=eng, json={"status": "Standby"}).status_code == 200
+    assert submit(client, eng, "FAC-002", "LPG Train A").status_code == 200
     other = next(a for a in client.get(f"{API}/assets", headers=eng).json() if a["facilityId"] == "FAC-002")
-    assert client.patch(f"{API}/assets/{other['id']}", headers=eng, json={"status": "Standby"}).status_code == 403
+    assert client.patch(f"{API}/assets/{other['id']}", headers=eng, json={"status": "Standby"}).status_code == 200
 
 
 # ---------------------------------------------------------------- R-05 (ACT-23, APR-15, NFR-06)

@@ -18,7 +18,7 @@ def to_dict(c: ValidationConfig) -> dict[str, Any]:
         "historyMonths": c.history_months, "spikeBlockHigh": c.spike_block_high,
         "zeroEnabled": c.zero_enabled, "zeroBlock": c.zero_block,
         "limits": [{"field": l.field, "max": l.max, "enabled": l.enabled, "block": l.block} for l in c.limits],
-        "inspectionIntervalDays": c.inspection_interval_days,
+        "inspectionIntervalDays": c.inspection_interval_days, "energyVariancePct": c.energy_variance_pct,
     }
 
 
@@ -32,6 +32,7 @@ def from_dict(d: Mapping[str, Any]) -> ValidationConfig:
         limits=tuple(Limit(l["field"], float(l["max"]), l.get("enabled", True), l.get("block", False)) for l in d["limits"])
         if "limits" in d else base.limits,
         inspection_interval_days=int(d.get("inspectionIntervalDays", base.inspection_interval_days)),
+        energy_variance_pct=float(d.get("energyVariancePct", base.energy_variance_pct)),
     )
 
 
@@ -45,5 +46,5 @@ def save(db: Database, user: Mapping[str, Any], config: ValidationConfig) -> dic
     ReferenceRepository(db).set_items(KEY, [doc])
     audit(db, user, "Saved", "validation-rules",
           f"Validation rules updated: spike ≥{config.spike_pct:g}% (high ≥{config.high_pct:g}%), "
-          f"{len([l for l in config.limits if l.enabled])} control limit(s), inspection interval {config.inspection_interval_days} days.")
+          f"{len([l for l in config.limits if l.enabled])} control limit(s), inspection interval {config.inspection_interval_days} days, energy anomaly band ±{config.energy_variance_pct:g}%.")
     return to_dict(config)

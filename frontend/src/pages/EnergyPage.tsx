@@ -26,21 +26,29 @@ import { Field, PageHeader, SectionCard, StatCard } from "@/components/page-part
 import { StatusBadge } from "@/components/status-badge";
 import { type EnergyReconcileResult, type EnergyRecord } from "@/types/domain";
 import { downloadCsv, toCsv } from "@/lib/csv";
-import { useReconcileEnergy, useUpdateEnergyRecord } from "@/hooks/useApi";
+import { useReconcileEnergy, useUpdateEnergyRecord, useValidationRules } from "@/hooks/useApi";
 import { usePageMeta } from "@/hooks/use-page-meta";
+import { useAuth } from "@/context/AuthContext";
 import { useStore } from "@/lib/store";
 
 const fmt = (n: number) => n.toLocaleString("en-IN");
 
 const STREAM_UNIT: Record<string, string> = { Electricity: "kWh", "Natural gas": "SCM", Diesel: "L", Steam: "t", Renewable: "kWh" };
 
+/** One approval-basis rule for the KPIs, charts and consumption records. Records not yet linked to a submission (legacy) count as
+ *  approved unless their validation is still "Pending"; run "Reconcile" to link them. */
+const inBasis = (r: EnergyRecord, basis: Basis) =>
+  r.submissionStatus ? countsToward(r.submissionStatus, basis) : r.validation === "Pending" ? basis === "pending" : true;
+
 export default function EnergyPage() {
   usePageMeta("Energy Management — CarbonOps AI", "Track electricity, fuel, steam and renewable consumption by facility with meter references, cost and anomaly detection.");
-  const { energyRecords, facilities, facilityName, months, role, currentPeriod } = useStore();
+  const { energyRecords, allFacilities, facilityName, months, role, currentPeriod } = useStore();
+  const { can } = useAuth();
   const updateEnergy = useUpdateEnergyRecord();
   const reconcile = useReconcileEnergy();
-  const canEdit = role === "Plant Engineer" || role === "Administrator"; // the API allows exactly these two
-  const canReconcile = role === "Sustainability Manager" || role === "Administrator";
+  const { data: rules } = useValidationRules();
+  const canEdit = can("energy.edit"); // same permission the API checks
+  const canReconcile = can("energy.reconcile");
   const [edit, setEdit] = useState({ meterRef: "", invoiceRef: "", cost: "" });
   const [reconcileOpen, setReconcileOpen] = useState(false);
   const [preview, setPreview] = useState<EnergyReconcileResult | null>(null);
@@ -48,14 +56,16 @@ export default function EnergyPage() {
   const [facility, setFacility] = useState("all");
   const [stream, setStream] = useState("all");
   // One period filter for the KPIs, charts-highlight and the records tab. "all" = every period combined.
-  const [month, setMonth] = useState(currentPeriod);
+  const [from, setFrom] = useState(""); // "" = open-ended: earliest / latest period
+  const [to, setTo] = useState("");
   const [detail, setDetail] = useState<EnergyRecord | null>(null);
   const [basis, setBasis] = useState<Basis>("approved");
   const [tab, setTab] = useState("analytics");
-  const monthFilter = month;
-  const periodLabel = month === "all" ? "all periods" : month;
+  const inRange = (m: string) => (!from || m >= from) && (!to || m <= to);
+  const rangeBad = !!from && !!to && from > to;
+  const periodLabel = !from && !to ? "all periods" : from === to ? from : `${from || "earliest"} → ${to || "latest"}`;
   const reconcileScope = {
-    month: monthFilter === "all" ? undefined : monthFilter,
+    month: from && from === to ? from : undefined,
     facilityId: facility === "all" ? undefined : facility,
   };
 
@@ -65,14 +75,15 @@ export default function EnergyPage() {
         (r) =>
           (facility === "all" || r.facilityId === facility) &&
           (stream === "all" || r.stream === stream) &&
-          (monthFilter === "all" || r.month === monthFilter),
+          inRange(r.month) &&
+          inBasis(r, basis), // same approval basis as the KPIs and charts
       ),
-    [energyRecords, facility, stream, monthFilter],
+    [energyRecords, facility, stream, from, to, basis],
   );
 
   // Analytics count approved data by default; "pending" adds submitted data awaiting review. Legacy unlinked records always count.
   const scoped = useMemo(
-    () => energyRecords.filter((r) => (facility === "all" || r.facilityId === facility) && (!r.submissionStatus || countsToward(r.submissionStatus, basis))),
+    () => energyRecords.filter((r) => (facility === "all" || r.facilityId === facility) && inBasis(r, basis)),
     [energyRecords, facility, basis],
   );
 
@@ -81,7 +92,7 @@ export default function EnergyPage() {
 
   const trend = useMemo(
     () =>
-      months.map((m) => {
+      months.filter(inRange).map((m) => {
         const set = streamScoped.filter((r) => r.month === m);
         const steam = set.filter((r) => r.stream === "Steam").reduce((a, b) => a + b.quantity, 0);
         const kwh = set.filter((r) => r.stream === "Electricity").reduce((a, b) => a + b.quantity, 0);
@@ -99,17 +110,17 @@ export default function EnergyPage() {
           intensity: +(gj / 1000).toFixed(1),
         };
       }),
-    [streamScoped, months],
+    [streamScoped, months, from, to],
   );
 
-  const current = scoped.filter((r) => month === "all" || r.month === month);
+  const current = scoped.filter((r) => inRange(r.month));
   const totalCost = current.filter((r) => stream === "all" || r.stream === stream).reduce((a, b) => a + b.cost, 0);
   const renewableShare = (() => {
     const ren = current.filter((r) => r.stream === "Renewable Energy").reduce((a, b) => a + b.quantity, 0);
     const ele = current.filter((r) => r.stream === "Electricity").reduce((a, b) => a + b.quantity, 0);
     return ele ? ((ren / (ele + ren)) * 100).toFixed(1) : "0";
   })();
-  const anomalies = streamScoped.filter((r) => (month === "all" || r.month === month) && (r.validation === "Anomaly" || r.validation === "Missing"));
+  const anomalies = streamScoped.filter((r) => inRange(r.month) && (r.validation === "Anomaly" || r.validation === "Missing"));
   const energyTj = current.filter((r) => stream === "all" || r.stream === stream).reduce((a, b) => a + (b.energyGj ?? 0), 0) / 1000;
 
   const exportCsv = () => {
@@ -117,7 +128,7 @@ export default function EnergyPage() {
       ["Record", "Facility", "Month", "Stream", "Quantity", "Unit", "Energy (GJ)", "MoM variance %", "Cost (INR)", "Meter ref", "Invoice ref", "Validation", "Source submission"],
       rows.map((r) => [r.id, facilityName(r.facilityId), r.month, r.stream, r.quantity, r.unit, r.energyGj ?? "", r.variance, r.cost, r.meterRef, r.invoiceRef, r.validation, r.submissionId ?? ""]),
     );
-    downloadCsv(`energy-records-${facility === "all" ? "all-facilities" : facility}-${month}.csv`, csv);
+    downloadCsv(`energy-records-${facility === "all" ? "all-facilities" : facility}-${from}_${to}.csv`, csv);
     toast.success("Energy dataset exported", { description: `${rows.length} records downloaded as CSV.` });
   };
 
@@ -207,7 +218,7 @@ export default function EnergyPage() {
           <SelectTrigger className="h-9 w-56"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All facilities</SelectItem>
-            {facilities.map((f) => <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>)}
+            {allFacilities.map((f) => <SelectItem key={f.id} value={f.id}>{f.active === false ? `${f.name} (inactive)` : f.name}</SelectItem>)}
           </SelectContent>
         </Select>
         <Select value={stream} onValueChange={setStream}>
@@ -218,18 +229,21 @@ export default function EnergyPage() {
           </SelectContent>
         </Select>
         <Select value={basis} onValueChange={(v) => setBasis(v as Basis)}>
-          <SelectTrigger className="h-9 w-56" title="Which records feed the KPIs and charts"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="h-9 w-56" title="Which records feed the KPIs, charts and consumption records"><SelectValue /></SelectTrigger>
           <SelectContent>
-            {(Object.keys(BASIS_LABEL) as Basis[]).map((b) => <SelectItem key={b} value={b}>Charts: {BASIS_LABEL[b]}</SelectItem>)}
+            {(Object.keys(BASIS_LABEL) as Basis[]).map((b) => <SelectItem key={b} value={b}>{BASIS_LABEL[b]}</SelectItem>)}
           </SelectContent>
         </Select>
-        <Select value={month} onValueChange={setMonth}>
-          <SelectTrigger className="h-9 w-44" aria-label="Reporting period"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All periods</SelectItem>
-            {[...months].reverse().map((m) => <SelectItem key={m} value={m}>{m}{m === currentPeriod ? " (open)" : ""}</SelectItem>)}
-          </SelectContent>
-        </Select>
+        <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
+          From
+          <Input type="month" className="h-9 w-40" aria-label="From month" value={from} min={months[0]} max={to || months[months.length - 1]} onChange={(e) => setFrom(e.target.value)} />
+        </label>
+        <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
+          To
+          <Input type="month" className="h-9 w-40" aria-label="To month" value={to} min={from || months[0]} max={months[months.length - 1]} onChange={(e) => setTo(e.target.value)} />
+        </label>
+        {from || to ? <Button variant="ghost" size="sm" onClick={() => { setFrom(""); setTo(""); }}>All periods</Button> : null}
+        {rangeBad ? <span className="text-xs text-destructive">“From” is after “To” — nothing matches.</span> : null}
       </div>
 
       <Tabs value={tab} onValueChange={setTab}>
@@ -243,7 +257,7 @@ export default function EnergyPage() {
             <SectionCard title="Consumption by energy stream" description={`Thousands of native units per month — kWh (electricity, renewable), L (diesel), SCM (gas), t (steam). Bars are grouped, not stacked, because units differ.${stream === "all" ? "" : ` Showing ${stream} only.`}`}>
               <div className="h-72">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={trend} margin={{ left: 8, bottom: 18 }}>
+                  <BarChart data={trend} margin={{ left: 8, top: 8, bottom: 18 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
                     <XAxis dataKey="month" stroke="var(--muted-foreground)" fontSize={12} label={{ value: "Reporting month", position: "insideBottom", offset: -12, fontSize: 12, fill: "var(--muted-foreground)" }} />
                     <YAxis stroke="var(--muted-foreground)" fontSize={12} label={{ value: "Quantity (thousand units)", angle: -90, position: "insideLeft", fontSize: 12, fill: "var(--muted-foreground)", style: { textAnchor: "middle" } }} />
@@ -252,7 +266,7 @@ export default function EnergyPage() {
                       formatter={(v, name) => [`${Number(v).toLocaleString("en-IN")} thousand ${STREAM_UNIT[String(name)] ?? ""}`, name]}
                       labelFormatter={(l) => `Month ${l}`}
                     />
-                    <Legend verticalAlign="top" wrapperStyle={{ fontSize: 12 }} />
+                    <Legend verticalAlign="top" height={36} wrapperStyle={{ fontSize: 12, paddingBottom: 8 }} />
                     {[["Electricity", "Electricity", 1], ["Natural gas", "Natural Gas", 2], ["Diesel", "Diesel", 3], ["Steam", "Steam", 5], ["Renewable", "Renewable Energy", 4]].map(([key, st, c]) =>
                       stream === "all" || stream === st ? <Bar key={String(key)} dataKey={String(key)} name={String(key)} fill={`var(--chart-${c})`} radius={[3, 3, 0, 0]} /> : null,
                     )}
@@ -280,7 +294,7 @@ export default function EnergyPage() {
             </SectionCard>
           </div>
 
-          <SectionCard title="Anomaly detection" description="Records outside the ±14% variance band or with missing meter data">
+          <SectionCard title="Anomaly detection" description={`Records outside the ±${rules?.energyVariancePct ?? 14}% variance band or with missing meter data`}>
             {anomalies.length === 0 ? (
               <p className="text-sm text-muted-foreground">No anomalies detected for the current selection.</p>
             ) : (
@@ -339,7 +353,7 @@ export default function EnergyPage() {
                 </p>
                 {!canEdit && (
                   <p className="col-span-2 rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">
-                    Meter, invoice and cost can be edited by Plant Engineers (signed in as: {role}).
+                    Meter, invoice and cost can be edited by roles that may edit energy records (signed in as: {role}).
                   </p>
                 )}
                 {canEdit && (

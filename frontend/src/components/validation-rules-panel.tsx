@@ -7,6 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SectionCard } from "@/components/page-parts";
 import { useSaveValidationRules, useValidationRules } from "@/hooks/useApi";
+import { useAuth } from "@/context/AuthContext";
 import { useStore } from "@/lib/store";
 import type { ValidationRules } from "@/types/domain";
 
@@ -25,8 +26,8 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
 }
 
 export function ValidationRulesPanel() {
-  const { role } = useStore();
-  const canEdit = role === "Sustainability Manager";
+  const { can } = useAuth();
+  const canEdit = can("rules.manage");
   const { data, isLoading } = useValidationRules();
   const save = useSaveValidationRules();
   const [rules, setRules] = useState<ValidationRules | null>(null);
@@ -51,7 +52,7 @@ export function ValidationRulesPanel() {
 
   return (
     <div className="space-y-4">
-      <SectionCard title="Validation rules" description={canEdit ? "Thresholds used to flag activity data. A rule marked Block stops a submission (drafts can always be saved)." : "Read-only — only a Sustainability Manager can change these rules."}>
+      <SectionCard title="Validation rules" description={canEdit ? "Thresholds used to flag activity data. A rule marked Block stops a submission (drafts can always be saved)." : "Read-only — your role cannot change these rules."}>
         <fieldset disabled={!canEdit} className="space-y-1">
           <Row label="Spike detection" hint="Compare each source with the mean of earlier non-draft months.">
             <Switch checked={rules.spikeEnabled} onCheckedChange={(v) => set("spikeEnabled", v)} />
@@ -66,6 +67,9 @@ export function ValidationRulesPanel() {
           <Row label="Block zero / missing values"><Switch checked={rules.zeroBlock} onCheckedChange={(v) => set("zeroBlock", v)} /></Row>
           <Row label="Asset inspection interval (days)" hint="Assets (not shut down) not inspected within this interval raise an alert.">
             <Input className="h-8 w-24" type="number" value={rules.inspectionIntervalDays} onChange={(e) => set("inspectionIntervalDays", num(e.target.value))} />
+          </Row>
+          <Row label="Energy anomaly band ± (%)" hint="Energy Management flags a record whose month-on-month change is beyond this band. Existing records are re-classified when you save.">
+            <Input className="h-8 w-24" type="number" value={rules.energyVariancePct} onChange={(e) => set("energyVariancePct", num(e.target.value))} />
           </Row>
         </fieldset>
       </SectionCard>

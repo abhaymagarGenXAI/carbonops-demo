@@ -1,6 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { authApi, registerAuthFailureHandler } from "@/services/api";
+import { useRoles } from "@/hooks/useApi";
+import { ADMIN_ROLE_ID, canAccess } from "@/router/access";
 import type { AppRole, UserRec } from "@/types/domain";
 
 type AuthStatus = "loading" | "authenticated" | "unauthenticated";
@@ -10,9 +12,20 @@ interface AuthValue {
   status: AuthStatus;
   /** Role the UI currently behaves as. Equals user.appRole unless an Administrator is "viewing as" another role. */
   role: AppRole;
+  /** Id of that role (null until the user is known). */
+  roleId: string | null;
+  /** Permission codes of the role the UI currently behaves as. */
+  permissions: readonly string[];
+  /** Does the role the UI behaves as hold this permission? Use for showing/hiding actions. */
+  can: (code: string) => boolean;
+  /** Does the REAL signed-in user hold this permission (ignores "Simulate role")? Mirrors what the API will allow. */
+  hasPermission: (code: string) => boolean;
+  /** May the role the UI behaves as open this route? */
+  canOpen: (path: string) => boolean;
   /** UI-only "Simulate role" preview — offered to real Administrators only; the API always enforces the real role. */
   canSimulateRole: boolean;
-  setRole: (role: AppRole) => void;
+  /** Preview the app as another role (by id). */
+  setRole: (roleId: string) => void;
   login: (email: string, password: string) => Promise<UserRec>;
   logout: () => Promise<void>;
 }
@@ -23,12 +36,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const [user, setUser] = useState<UserRec | null>(null);
   const [status, setStatus] = useState<AuthStatus>("loading");
-  const [simulated, setSimulated] = useState<AppRole | null>(null);
+  const [simulatedId, setSimulatedId] = useState<string | null>(null);
+  const canSimulateRole = !!user && (user.roleId === ADMIN_ROLE_ID || user.appRole === "Administrator");
+  const { data: roles = [] } = useRoles(canSimulateRole);
 
   const clearSession = useCallback(() => {
     queryClient.clear(); // never leak one user's cached data to the next
     setUser(null);
-    setSimulated(null);
+    setSimulatedId(null);
     setStatus("unauthenticated");
   }, [queryClient]);
 
@@ -51,11 +66,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [clearSession]);
 
+  // Role/permission edits made by an Administrator reach people who are already signed in: re-read "me" every minute and
+  // whenever the tab regains focus (the API itself enforces changes on the very next request).
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    const refresh = () => {
+      void authApi
+        .me()
+        .then((fresh) => setUser((prev) => (prev && JSON.stringify(prev) === JSON.stringify(fresh) ? prev : fresh)))
+        .catch(() => undefined); // a real 401 is handled by the shared auth-failure handler
+    };
+    const timer = window.setInterval(refresh, 60_000);
+    const onVisible = () => document.visibilityState === "visible" && refresh();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [status]);
+
   const login = useCallback(
     async (email: string, password: string) => {
       const session = await authApi.login(email, password);
       queryClient.clear();
-      setSimulated(null);
+      setSimulatedId(null);
       setUser(session.user);
       setStatus("authenticated");
       return session.user;
@@ -69,20 +103,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [clearSession]);
 
   const value = useMemo<AuthValue>(() => {
-    const real = user?.appRole ?? "Plant Engineer";
-    const canSimulateRole = user?.appRole === "Administrator";
+    const simulatedRole = canSimulateRole && simulatedId ? roles.find((r) => r.id === simulatedId) ?? null : null;
+    const realPermissions = user?.permissions ?? [];
+    const permissions = simulatedRole ? simulatedRole.permissions : realPermissions;
+    const roleId = simulatedRole ? simulatedRole.id : user?.roleId ?? null;
     return {
       user,
       status,
-      role: canSimulateRole && simulated ? simulated : real,
+      role: simulatedRole ? simulatedRole.name : user?.appRole ?? "",
+      roleId,
+      permissions,
+      can: (code) => permissions.includes(code),
+      hasPermission: (code) => realPermissions.includes(code),
+      canOpen: (path) => canAccess(path, roleId, permissions),
       canSimulateRole,
-      setRole: (r) => {
-        if (canSimulateRole) setSimulated(r);
+      setRole: (id) => {
+        if (canSimulateRole) setSimulatedId(id);
       },
       login,
       logout,
     };
-  }, [user, status, simulated, login, logout]);
+  }, [user, status, simulatedId, roles, canSimulateRole, login, logout]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

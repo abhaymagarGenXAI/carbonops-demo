@@ -12,6 +12,11 @@ export interface Facility {
   units: string[];
   commissioned: string;
   employees: number;
+  /** false = deactivated: hidden from data entry and dropdowns, history kept. Missing means active. */
+  active?: boolean;
+  deactivatedAt?: string | null;
+  deactivatedBy?: string | null;
+  /** Every deactivation / reactivation: totals before and after are not like-for-like. */
   createdAt?: string | null;
   updatedAt?: string | null;
 }
@@ -39,6 +44,7 @@ export interface Submission {
   month: string;
   status: Status;
   submittedBy: string;
+  submittedById?: string | null;
   updatedAt: string;
   reviewer: string;
   reviewerComments: string;
@@ -47,6 +53,8 @@ export interface Submission {
   anomalies: string[];
   revision: number;
   data: ActivityData;
+  /** Per production unit figures; `data` is their sum. Older records may not have it (then `unit` + `data` is the single unit). */
+  unitData?: { unit: string; unitId?: string | null; data: ActivityData }[];
   reviewAction?: "None" | "Clarification Required";
   submittedAt?: string | null;
   reviewedAt?: string | null;
@@ -182,7 +190,7 @@ export interface DocumentRec {
   facilityId: string;
   month: string;
   size: string;
-  format: "PDF" | "XLSX" | "CSV" | "DOCX";
+  format: "PDF" | "XLSX" | "CSV" | "DOCX" | "PPTX" | "TXT" | "PNG" | "JPG";
   uploadedBy: string;
   uploadedAt: string;
   linkedRecord: string;
@@ -192,6 +200,30 @@ export interface DocumentRec {
   hasFile?: boolean;
   sizeBytes?: number | null;
   sha256?: string | null;
+}
+
+export interface MasterImportReport {
+  applied: boolean;
+  canApply: boolean;
+  summary: Record<"Facilities" | "Assets", { create: number; update: number; error: number }>;
+  rows: { sheet: "Facilities" | "Assets"; row: number; key: string; action: "create" | "update" | "error"; errors: string[]; warnings: string[] }[];
+}
+
+export interface DocumentRepositoryRow extends DocumentRec {
+  facilityName: string;
+  versionCount: number;
+  fileOnDisk: boolean;
+  fileMissing: boolean;
+  /** linked = explicitly attached to a submission; inferred = same facility + month; none = attached to nothing */
+  attachment: "linked" | "inferred" | "none";
+  submissionId: string | null;
+  submissionStatus: string | null;
+  unit: string | null;
+  periodStatus: string | null;
+}
+export interface DocumentRepository {
+  summary: { total: number; withFile: number; metadataOnly: number; missingFiles: number; unattached: number; totalBytes: number; byType: Record<string, number> };
+  items: DocumentRepositoryRow[];
 }
 
 export interface ImportRow {
@@ -229,9 +261,58 @@ export interface UserRec {
   email: string;
   role: string;
   appRole: AppRole;
+  roleId: string | null;
+  roleCode: string | null;
   facility: string;
+  facilityIds: string[];
+  /** Permission codes granted by the user's role; the UI shows only what these allow. */
+  permissions: string[];
   status: "Active" | "Suspended";
   lastLogin: string;
+}
+
+export interface UserCreateInput {
+  name: string;
+  email: string;
+  /** Job title shown in the Users table. */
+  role: string;
+  roleId: string;
+  facilityIds: string[];
+  password: string;
+}
+
+export interface UserChanges {
+  name?: string;
+  email?: string;
+  role?: string;
+  roleId?: string;
+  status?: "Active" | "Suspended";
+}
+
+export interface RoleInput {
+  name: string;
+  description: string;
+  permissions: string[];
+}
+
+export interface RoleRec {
+  id: string;
+  code: string;
+  name: AppRole;
+  description: string;
+  isSystem: boolean;
+  /** The Administrator role: always holds every permission and cannot be edited or deleted. */
+  isLocked: boolean;
+  allFacilities: boolean;
+  isActive: boolean;
+  members: number;
+  permissions: string[];
+}
+
+export interface PermissionRec {
+  code: string;
+  module: string;
+  description: string;
 }
 
 export interface EmissionFactor {
@@ -244,9 +325,13 @@ export interface EmissionFactor {
   validFrom: string;
   status: "Active" | "Superseded";
   category?: string | null;
+  /** Factor series (master) this version belongs to. */
+  emissionSourceId?: string | null;
+  /** Exclusive end of validity; null = open-ended (latest version). */
+  validTo?: string | null;
 }
 
-export type EmissionFactorInput = Omit<EmissionFactor, "id"> & { id?: string };
+export type EmissionFactorInput = Omit<EmissionFactor, "id" | "emissionSourceId" | "validTo"> & { id?: string };
 
 export interface Scope3Entry {
   id: string; month: string; category: string; source: string; facilityId: string | null; description: string;
@@ -257,7 +342,8 @@ export interface Scope3Entry {
 export interface Scope3Input { month: string; category: string; source: string; activityValue: number; facilityId: string | null; description: string }
 
 
-export type AppRole = "Plant Engineer" | "Sustainability Manager" | "Administrator";
+/** A role name. Roles are managed by the Administrator, so this is no longer a fixed set. */
+export type AppRole = string;
 
 export interface AuditEntry {
   id: string;
@@ -307,10 +393,12 @@ export interface RecentActivityItem {
 /** Payload for saving a draft / submitting activity data (server computes id, validation, completeness). */
 export interface SubmissionSavePayload {
   facilityId: string;
-  unit: string;
+  unit?: string;
   month: string;
   status: "Draft" | "Submitted";
-  data: ActivityData;
+  data?: ActivityData;
+  /** One entry per production unit that has figures this month. */
+  unitData?: { unit: string; data: ActivityData }[];
   /** Revision the form was opened on; the API refuses the save if someone else changed the submission since. */
   revision?: number;
 }
@@ -334,7 +422,7 @@ export interface InitiativeCreatePayload {
 export interface ValidationLimit { field: string; max: number; enabled: boolean; block: boolean }
 export interface ValidationRules {
   spikeEnabled: boolean; spikePct: number; highPct: number; historyMonths: number; spikeBlockHigh: boolean;
-  zeroEnabled: boolean; zeroBlock: boolean; limits: ValidationLimit[]; inspectionIntervalDays: number;
+  zeroEnabled: boolean; zeroBlock: boolean; limits: ValidationLimit[]; inspectionIntervalDays: number; energyVariancePct: number;
 }
 
 export interface BaselineSnapshot {
@@ -381,4 +469,27 @@ export interface InventoryReport {
     coverage: { recordCount: number; tracedRecords: number; legacyUntraced: number; incompleteMonths: string[] };
   };
   warnings: string[];
+}
+
+export interface ForecastPoint { month: string; value: number; low?: number; high?: number }
+export interface ForecastScope {
+  fit: { months: number; slopePerMonth: number; r2: number; residualSd: number; slopePctPerMonth: number };
+  history: { month: string; value: number }[];
+  projection: { month: string; value: number; low: number; high: number }[];
+}
+export interface TargetOutlook {
+  scope: string; targetYear: number; reductionPct: number; applicable: boolean; monthsAhead?: number;
+  projectedMonthly?: number; projectedLow?: number; projectedHigh?: number; allowedMonthly?: number;
+  gapMonthly?: number; gapPct?: number | null; verdict?: string; certainty?: string;
+}
+export interface ForecastView {
+  available: boolean; horizon: number; method: string[]; minMonths: number; completeMonths: number; usedMonths: string[];
+  scopes: Record<"Total" | "Scope 1" | "Scope 2", ForecastScope>; outlook: TargetOutlook[]; warnings: string[];
+}
+
+export interface AssistantStatus { url: string; model: string; reachable: boolean; modelInstalled: boolean; message: string }
+export interface AssistantToolCall { name: string; arguments: Record<string, unknown>; result: Record<string, unknown> }
+export interface AssistantAnswer {
+  model: string; question: string; answer: string | null; mode: "answered" | "withheld" | "unavailable";
+  message: string; ungrounded: string[]; rawAnswer?: string | null; toolCalls: AssistantToolCall[];
 }

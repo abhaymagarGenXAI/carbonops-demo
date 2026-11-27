@@ -37,7 +37,7 @@ def test_limits_and_blocking_flags():
 def _rules(**over):
     return {"spikeEnabled": True, "spikePct": 30, "highPct": 50, "historyMonths": 3, "spikeBlockHigh": False,
             "zeroEnabled": True, "zeroBlock": False, "limits": [{"field": "diesel", "max": 250000, "enabled": True, "block": False}],
-            "inspectionIntervalDays": 150, **over}
+            "inspectionIntervalDays": 150, "energyVariancePct": 14, **over}
 
 
 def test_get_defaults_put_permissions_and_validation(client):

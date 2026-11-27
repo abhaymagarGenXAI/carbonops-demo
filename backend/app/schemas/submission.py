@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from app.schemas.common import MONTH_PATTERN, CamelModel, ReviewDecision
 
@@ -41,15 +41,31 @@ class ActivityDataOut(CamelModel):
     notes: str = ""
 
 
+class UnitDataIn(CamelModel):
+    """One production unit's figures for the month."""
+
+    unit: str = Field(min_length=1)
+    data: ActivityDataIn
+
+
 class SubmissionSave(CamelModel):
-    """Save a draft or submit for review. One submission exists per facility + month."""
+    """Save a draft or submit for review. One submission exists per facility + month; it can carry the figures of
+    several production units (`unitData`) - the facility figures (`data`) are then their sum. The older single-unit
+    form (`unit` + `data`) still works."""
 
     facility_id: str = Field(min_length=1)
-    unit: str = Field(min_length=1)
+    unit: str | None = Field(default=None, min_length=1)
     month: str = Field(pattern=MONTH_PATTERN)
     status: Literal["Draft", "Submitted"]
-    data: ActivityDataIn
+    data: ActivityDataIn | None = None
+    unit_data: list[UnitDataIn] | None = Field(default=None, min_length=1)
     revision: int | None = Field(default=None, ge=0, description="Revision the client last saw; a mismatch is refused (409)")
+
+    @model_validator(mode="after")
+    def _one_form(self):
+        if self.unit_data is None and (self.unit is None or self.data is None):
+            raise ValueError("Provide unitData (one entry per production unit) or both unit and data")
+        return self
 
 
 class ReviewRequest(CamelModel):
@@ -75,4 +91,6 @@ class SubmissionOut(CamelModel):
     completeness: float = 0
     anomalies: list[str] = Field(default_factory=list)
     revision: int = 0
+    unit_data: list[dict] = Field(default_factory=list)
+    submitted_by_id: str | None = None
     data: ActivityDataOut

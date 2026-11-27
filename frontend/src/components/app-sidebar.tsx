@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   Leaf,
   Settings2,
+  UserCog,
   Zap,
 } from "lucide-react";
 import {
@@ -25,7 +26,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { useStore } from "@/lib/store";
-import { canAccess } from "@/router/access";
+import { useAuth } from "@/context/AuthContext";
 
 // const groups = [
 //   {
@@ -107,6 +108,9 @@ const groups = [
         url: "/approvals",
         icon: BadgeCheck,
       },
+      { title: "Document repository", url: "/documents", icon: FileStack },
+      { title: "AI Assistant", url: "/assistant", icon: Bot },
+      { title: "Users & Access", url: "/users", icon: UserCog },
     ],
   },
 ];
@@ -117,6 +121,7 @@ export function AppSidebar() {
   const collapsed = state === "collapsed";
   const { pathname } = useLocation();
   const { role, submissions, currentPeriod } = useStore();
+  const { canOpen } = useAuth();
   const pending = submissions.filter((s) => s.status === "Submitted" || s.status === "Under Review").length;
 
   return (
@@ -140,7 +145,7 @@ export function AppSidebar() {
 
           {groups
   .filter((g) =>
-    g.items.some((item) => canAccess(item.url, role))
+    g.items.some((item) => canOpen(item.url))
   )
   .map((g) => (
 
@@ -152,7 +157,7 @@ export function AppSidebar() {
 
 
                 {g.items
-  .filter((item) => canAccess(item.url, role))
+  .filter((item) => canOpen(item.url))
   .map((item) => {
 
 

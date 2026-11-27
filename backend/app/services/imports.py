@@ -47,7 +47,7 @@ def preview(db: Database, *, filename: str, content: bytes, default_facility_id:
     existing = {(s["facilityId"], s["month"]): s for s in repo.list()}
     history_cache: dict[str, list[dict[str, Any]]] = {}
 
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str | None]] = set()
     rows: list[dict[str, Any]] = []
     for rownum, cells in data_rows:
         def cell(field: str) -> Any:
@@ -78,6 +78,8 @@ def preview(db: Database, *, filename: str, content: bytes, default_facility_id:
             month = default_month
         else:
             errors.append("Month is required")
+        if fac is not None and fac.get("active", True) is False:
+            errors.append(f"{fac['name']} is deactivated; reactivate it before importing data for it")
         if fac is not None:
             uval = imp.cell_text(cell("unit"))
             valid_units = fac["units"]
@@ -114,9 +116,9 @@ def preview(db: Database, *, filename: str, content: bytes, default_facility_id:
         replace_note = None
         if fac is not None and month is not None:
             key = (fac["id"], month)
-            if key in seen:
-                errors.append(f"Duplicate of an earlier row for {fac['name']} {month}")
-            seen.add(key)
+            if (fac["id"], month, unit) in seen:
+                errors.append(f"Duplicate of an earlier row for {fac['name']} {month}" + (f" / {unit}" if unit else ""))
+            seen.add((fac["id"], month, unit))
             try:
                 periods.assert_accepts_submissions(db, month)
             except HTTPException as exc:
@@ -132,41 +134,56 @@ def preview(db: Database, *, filename: str, content: bytes, default_facility_id:
                     replace_note = f"Replaces the existing {cur['status'].lower()} {cur['id']}"
         if replace_note and not errors:  # only meaningful for rows that will actually be imported
             warnings.append(replace_note)
-        if activity is not None and fac is not None and month is not None and not errors:
-            hist = history_cache.get(fac["id"])
-            if hist is None:
-                hist = history_cache[fac["id"]] = repo.list({"facilityId": fac["id"]})
-            warnings += [("Blocks submission (save as draft instead): " if f.blocking else "") + f.message
-                         for f in validation.check_activity(activity, validation.history_before(hist, month), config)]
 
         rows.append({
             "row": rownum, "facilityId": fac["id"] if fac else None, "facilityName": fac["name"] if fac else None,
             "unit": unit, "month": month, "data": activity, "errors": errors, "warnings": warnings,
             "existingStatus": existing_status, "importable": not errors and activity is not None,
         })
+    # Several rows of one facility + month are the production units of ONE submission: each unit is checked against its
+    # own history (like the Activity form); a facility-month with a single row is checked at facility level.
+    group_size: dict[tuple[str, str], int] = {}
+    for r in rows:
+        if r["importable"]:
+            group_size[(r["facilityId"], r["month"])] = group_size.get((r["facilityId"], r["month"]), 0) + 1
+    for r in rows:
+        if not r["importable"]:
+            continue
+        hist = history_cache.get(r["facilityId"])
+        if hist is None:
+            hist = history_cache[r["facilityId"]] = repo.list({"facilityId": r["facilityId"]})
+        multi = group_size[(r["facilityId"], r["month"])] > 1
+        prior = validation.unit_history(hist, r["month"], r["unit"]) if multi else validation.history_before(hist, r["month"])
+        r["warnings"] += [("Blocks submission (save as draft instead): " if f.blocking else "") + f.message
+                          for f in validation.check_activity(r["data"], prior, config)]
     ok = sum(1 for r in rows if r["importable"])
     return {"fileName": filename, "sheet": sheet, "rowCount": len(rows), "importableRows": ok,
             "errorRows": len(rows) - ok, "unmappedColumns": unmapped, "rows": rows}
 
 
 def commit(db: Database, user: Mapping[str, Any], req: ImportCommitRequest) -> dict[str, Any]:
-    """Saves each row through the normal submission path (same validation, emissions and audit)."""
-    results: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
+    """Saves each facility-month through the normal submission path (same validation, emissions and audit).
+    Rows sharing a facility and month become the production-unit lines of one submission."""
+    from app.schemas.submission import UnitDataIn
+
+    groups: dict[tuple[str, str], list[Any]] = {}
     for r in req.rows:
-        base = {"facilityId": r.facility_id, "month": r.month}
-        key = (r.facility_id, r.month)
-        if key in seen:
-            results.append({**base, "ok": False, "submissionId": None, "detail": "Duplicate facility/month in this import"})
+        groups.setdefault((r.facility_id, r.month), []).append(r)
+    results: list[dict[str, Any]] = []
+    for (fid, month), rows in groups.items():
+        base = {"facilityId": fid, "month": month}
+        units = [r.unit for r in rows]
+        if len(set(units)) != len(units):
+            results.append({**base, "ok": False, "submissionId": None, "detail": "Duplicate production unit for this facility and month in this import"})
             continue
-        seen.add(key)
         try:
             out = submissions.save_submission(db, user, SubmissionSave(
-                facility_id=r.facility_id, unit=r.unit, month=r.month, status=req.status, data=r.data))
+                facility_id=fid, month=month, status=req.status,
+                unit_data=[UnitDataIn(unit=r.unit, data=r.data) for r in rows]))
             results.append({**base, "ok": True, "submissionId": out["id"], "detail": ""})
         except HTTPException as exc:
             results.append({**base, "ok": False, "submissionId": None, "detail": str(exc.detail)})
     saved = sum(1 for x in results if x["ok"])
     if saved:
-        audit(db, user, "Imported", "bulk-import", f"{saved} of {len(results)} facility-month row(s) imported as {req.status}.")
+        audit(db, user, "Imported", "bulk-import", f"{saved} of {len(results)} facility-month submission(s) imported as {req.status}.")
     return {"saved": saved, "failed": len(results) - saved, "results": results}

@@ -10,6 +10,7 @@ from app.repositories.user import UserRepository
 from app.schemas.auth import ChangePasswordRequest, LoginRequest, TokenResponse
 from app.schemas.user import UserOut
 from app.services import auth as auth_service
+from app.services import iam
 from app.services.common import audit
 from app.utils.time import as_aware
 
@@ -41,7 +42,7 @@ def _clear_refresh_cookie(response: Response) -> None:
 
 
 def _token_response(db, session: dict[str, Any], user_raw: dict[str, Any]) -> TokenResponse:
-    user_public = UserRepository(db).to_public(user_raw)
+    user_public = iam.enrich_users(db, [UserRepository(db).to_public(user_raw)])[0]  # adds roleId, facilityIds and permissions
     return TokenResponse(
         access_token=session["access"], expires_in=session["expires_in"], user=UserOut.model_validate(user_public)
     )
@@ -88,8 +89,8 @@ def logout(
 
 
 @router.get("/me", response_model=UserOut, summary="The currently authenticated user")
-def me(user: CurrentUser):
-    return user
+def me(user: CurrentUser, db: Db):
+    return iam.enrich_users(db, [dict(user)])[0]  # includes the permissions of the user's role, which the UI follows
 
 
 @router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)

@@ -22,7 +22,7 @@ class DocumentCreate(CamelModel):
     facility_id: str = Field(min_length=1)
     month: str = Field(pattern=MONTH_PATTERN)
     size: str = Field(min_length=1)
-    format: Literal["PDF", "XLSX", "CSV", "DOCX"]
+    format: Literal["PDF", "XLSX", "CSV", "DOCX", "PPTX", "TXT", "PNG", "JPG"]
     linked_record: str = ""
 
 

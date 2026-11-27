@@ -51,6 +51,15 @@ const schema = z.object({
 
 type FormValues = z.input<typeof schema>;
 
+type UnitFigures = Omit<z.output<typeof schema>, "month" | "facilityId" | "unit">;
+const NUMERIC_KEYS = ["productionVolume", "electricity", "diesel", "naturalGas", "steam", "water", "flareGas", "methaneLeak", "renewable"] as const;
+/** New forms start empty (shown as the placeholder 0) so typing never has to delete a leading 0; an empty field counts as 0. */
+const blankNumbers = () => Object.fromEntries(NUMERIC_KEYS.map((k) => [k, ""])) as unknown as Pick<FormValues, (typeof NUMERIC_KEYS)[number]>;
+const FIGURE_KEYS = [...NUMERIC_KEYS, "operatingHours", "remarks", "notes"] as const;
+const pickFigures = (v: Record<string, unknown>) => Object.fromEntries(FIGURE_KEYS.map((k) => [k, v[k]])) as Partial<FormValues>;
+/** The figures of every unit on a stored submission (older records have a single unit and no unitData). */
+const unitsOf = (s: Pick<Submission, "unit" | "data" | "unitData">) => (s.unitData && s.unitData.length ? s.unitData : [{ unit: s.unit, data: s.data }]);
+
 const numericFields: { name: keyof FormValues; label: string; unit: string }[] = [
   { name: "productionVolume", label: "Production volume", unit: "boe" },
   { name: "electricity", label: "Electricity consumption", unit: "kWh" },
@@ -66,7 +75,7 @@ const numericFields: { name: keyof FormValues; label: string; unit: string }[] =
 
 export default function ActivityPage() {
   usePageMeta("Activity Data Collection — CarbonOps AI", "Monthly activity and consumption data capture for production units: drafts, submissions, bulk upload and reviewer feedback.");
-  const { currentPeriod, facilities, facilityName, months, reportingPeriods } = useStore();
+  const { currentPeriod, facilities, allFacilities, facilityName, months, reportingPeriods } = useStore();
   /** Locked periods no longer accept data (the API enforces this too). */
   const enterableMonths = [...reportingPeriods].filter((p) => p.status !== "Locked").map((p) => p.period).reverse();
 
@@ -85,8 +94,7 @@ export default function ActivityPage() {
     month: enterableMonths.includes(currentPeriod) ? currentPeriod : (enterableMonths[0] ?? currentPeriod),
     facilityId: facilities[0]?.id ?? "",
     unit: facilities[0]?.units[0] ?? "",
-    productionVolume: 0, electricity: 0, diesel: 0, naturalGas: 0, steam: 0, water: 0, flareGas: 0, methaneLeak: 0, renewable: 0,
-    operatingHours: 720, remarks: "", notes: "",
+    ...blankNumbers(), operatingHours: 720, remarks: "", notes: "",
   });
   const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: blankForm() });
 
@@ -101,31 +109,52 @@ export default function ActivityPage() {
   }, [facilityId, watchedMonth, submissions]);
   const units = facilities.find((f) => f.id === facilityId)?.units ?? [];
 
+  // A month's submission can hold several production units. The form edits ONE unit at a time (the "Production unit"
+  // select); the figures of the other units wait in this buffer, and everything is saved together.
+  const [unitBuf, setUnitBuf] = useState<Record<string, Partial<FormValues>>>({});
+  const blankFigures = (): Partial<FormValues> => ({ ...blankNumbers(), operatingHours: 720, remarks: "", notes: "" });
+  const hasFigures = (f: Partial<FormValues> | undefined) => !!f && NUMERIC_KEYS.some((k) => Number(f[k] || 0) !== 0);
+  const watchedAll = form.watch();
+  const currentUnit = watchedAll.unit;
+  /** Buffer including the unit currently on screen. */
+  const withCurrent = (): Record<string, Partial<FormValues>> => ({ ...unitBuf, [form.getValues("unit")]: pickFigures(form.getValues()) });
+  const switchUnit = (next: string) => {
+    const buf = withCurrent();
+    setUnitBuf(buf);
+    form.reset({ ...form.getValues(), ...(buf[next] ?? blankFigures()), unit: next } as FormValues);
+  };
+  /** Loads a stored submission (all its units) into the form. */
+  const openSubmission = (s: Pick<Submission, "facilityId" | "month" | "unit" | "data" | "unitData">, base: FormValues = form.getValues()) => {
+    const lines = unitsOf(s);
+    setUnitBuf(Object.fromEntries(lines.map((l) => [l.unit, pickFigures(l.data as unknown as Record<string, unknown>)])));
+    form.reset({ ...base, ...pickFigures(lines[0]!.data as unknown as Record<string, unknown>), month: s.month, facilityId: s.facilityId, unit: lines[0]!.unit } as FormValues);
+  };
+  const unitTotals = useMemo(() => {
+    const buf = { ...unitBuf, [currentUnit]: pickFigures(watchedAll) };
+    const filled = Object.entries(buf).filter(([u, f]) => units.includes(u) && (u === currentUnit || hasFigures(f)));
+    const sum = (k: (typeof NUMERIC_KEYS)[number]) => filled.reduce((a, [, f]) => a + (Number(f[k]) || 0), 0);
+    return { filled: filled.map(([u]) => u), sum };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unitBuf, watchedAll, currentUnit, units]);
+
   // Validation, completeness, id generation, reviewer assignment and the audit entry are now computed by the API.
   const persist = async (values: FormValues, status: "Draft" | "Submitted") => {
     const parsed = schema.parse(values);
+    const buf = { ...unitBuf, [parsed.unit]: pickFigures(values as unknown as Record<string, unknown>) };
+    const lines = Object.entries(buf)
+      .filter(([u, f]) => units.includes(u) && (u === parsed.unit || hasFigures(f)))
+      .map(([u, f]) => {
+        const p = schema.parse({ ...f, month: parsed.month, facilityId: parsed.facilityId, unit: u }) as UnitFigures;
+        return { unit: u, data: { productionVolume: p.productionVolume, electricity: p.electricity, diesel: p.diesel, naturalGas: p.naturalGas, steam: p.steam, water: p.water, flareGas: p.flareGas, methaneLeak: p.methaneLeak, renewable: p.renewable, operatingHours: p.operatingHours, remarks: p.remarks ?? "", notes: p.notes ?? "" } };
+      });
     const revKey = `${parsed.facilityId}|${parsed.month}`;
     try {
       const record = await saveSubmission({
         ...(revKey in seenRevision.current ? { revision: seenRevision.current[revKey]! } : {}),
         facilityId: parsed.facilityId,
-        unit: parsed.unit,
         month: parsed.month,
         status,
-        data: {
-          productionVolume: parsed.productionVolume,
-          electricity: parsed.electricity,
-          diesel: parsed.diesel,
-          naturalGas: parsed.naturalGas,
-          steam: parsed.steam,
-          water: parsed.water,
-          flareGas: parsed.flareGas,
-          methaneLeak: parsed.methaneLeak,
-          renewable: parsed.renewable,
-          operatingHours: parsed.operatingHours,
-          remarks: parsed.remarks ?? "",
-          notes: parsed.notes ?? "",
-        },
+        unitData: lines,
       });
       seenRevision.current[revKey] = record.revision;
       if (status === "Draft") toast.success(`Draft ${record.id} saved`, { description: "Resume any time before period close." });
@@ -146,14 +175,14 @@ export default function ActivityPage() {
       toast.error("No previous submission found", { description: `Nothing recorded for ${facilityName(facilityId)} in ${prevMonth}.` });
       return;
     }
-    form.reset({ ...form.getValues(), ...prev.data, unit: prev.unit });
+    openSubmission({ ...prev, month: form.getValues("month") });
     toast.info(`Copied ${prev.id}`, { description: "Values carried forward — review before submitting." });
   };
 
   /** A single importable row from a file fills the form so it can be reviewed before saving. */
   const loadImportedRow = (row: ImportRow) => {
     if (!row.data || !row.facilityId || !row.unit || !row.month) return;
-    form.reset({ ...form.getValues(), ...row.data, facilityId: row.facilityId, unit: row.unit, month: row.month } as FormValues);
+    openSubmission({ facilityId: row.facilityId, month: row.month, unit: row.unit, data: row.data as never });
     toast.info(`Loaded row ${row.row} from file`, { description: "Review the values, then save or submit." });
   };
 
@@ -233,7 +262,7 @@ export default function ActivityPage() {
               <Button
                 size="sm"
                 onClick={() => {
-                  form.reset({ ...blankForm(), ...target.data, month: target.month, facilityId: target.facilityId, unit: target.unit });
+                  openSubmission(target, blankForm());
                   setTab("entry");
                   toast.info(`Loaded ${target.id} into the entry form`, { description: "Correct the values, then submit again." });
                 }}
@@ -281,6 +310,7 @@ export default function ActivityPage() {
                             value={field.value}
                             onValueChange={(v) => {
                               field.onChange(v);
+                              setUnitBuf({});
                               form.setValue("unit", facilities.find((f) => f.id === v)!.units[0]!);
                             }}
                           >
@@ -296,10 +326,10 @@ export default function ActivityPage() {
                       name="unit"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Production unit</FormLabel>
-                          <Select value={field.value} onValueChange={field.onChange}>
+                          <FormLabel>Production unit being entered</FormLabel>
+                          <Select value={field.value} onValueChange={switchUnit}>
                             <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
-                            <SelectContent>{units.map((u) => <SelectItem key={u} value={u}>{u}</SelectItem>)}</SelectContent>
+                            <SelectContent>{units.map((u) => <SelectItem key={u} value={u}>{u}{u !== currentUnit && hasFigures(unitBuf[u]) ? " ✓ entered" : ""}</SelectItem>)}</SelectContent>
                           </Select>
                           <FormMessage />
                         </FormItem>
@@ -308,7 +338,7 @@ export default function ActivityPage() {
                   </div>
                 </SectionCard>
 
-                <SectionCard title="Operational activity data" description="All quantities are for the selected reporting month.">
+                <SectionCard title="Operational activity data" description={`Figures for ${currentUnit || "the selected unit"} in the selected reporting month. Pick another production unit above to add its figures to the same submission.`}>
                   <div className="grid gap-4 sm:grid-cols-2">
                     {numericFields.map((f) => (
                       <FormField
@@ -321,7 +351,7 @@ export default function ActivityPage() {
                               {f.label} <span className="text-muted-foreground">({f.unit})</span>
                             </FormLabel>
                             <FormControl>
-                              <Input type="number" inputMode="decimal" {...field} value={String(field.value ?? "")} className="tabular" />
+                              <Input type="number" inputMode="decimal" placeholder="0" min={0} {...field} value={String(field.value ?? "")} className="tabular" onFocus={(e) => e.currentTarget.select()} />
                             </FormControl>
                             <FormMessage />
                           </FormItem>
@@ -330,6 +360,19 @@ export default function ActivityPage() {
                     ))}
                   </div>
                 </SectionCard>
+
+                {units.length > 1 ? (
+                  <SectionCard title="Facility total for this submission" description={`Sum of ${unitTotals.filled.length} production unit${unitTotals.filled.length === 1 ? "" : "s"} with figures: ${unitTotals.filled.join(", ")}. Saving or submitting sends all of them together as one facility submission.`}>
+                    <dl className="grid gap-3 sm:grid-cols-3">
+                      {numericFields.filter((f) => f.name !== "operatingHours").map((f) => (
+                        <div key={f.name}>
+                          <dt className="text-xs text-muted-foreground">{f.label}</dt>
+                          <dd className="tabular text-sm font-medium">{unitTotals.sum(f.name as (typeof NUMERIC_KEYS)[number]).toLocaleString("en-IN")} <span className="text-xs font-normal text-muted-foreground">{f.unit}</span></dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </SectionCard>
+                ) : null}
 
                 <SectionCard title="Remarks & supporting narrative" description="Context helps reviewers validate anomalies faster.">
                   <div className="grid gap-4">
@@ -416,7 +459,7 @@ export default function ActivityPage() {
                   <SelectTrigger className="h-9 w-52"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All facilities</SelectItem>
-                    {facilities.map((f) => <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>)}
+                    {allFacilities.map((f) => <SelectItem key={f.id} value={f.id}>{f.active === false ? `${f.name} (inactive)` : f.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
                 <Select value={fromMonth} onValueChange={setFromMonth}>
@@ -454,7 +497,7 @@ export default function ActivityPage() {
                   <DropdownMenuItem onClick={() => setDetail(s)}><Eye className="size-4" /> View submission</DropdownMenuItem>
                   <DropdownMenuItem
                     onClick={() => {
-                      form.reset({ ...form.getValues(), ...s.data, month: s.month, facilityId: s.facilityId, unit: s.unit });
+                      openSubmission(s);
                       toast.info(`Loaded ${s.id} into the entry form`);
                     }}
                   >
@@ -493,7 +536,7 @@ export default function ActivityPage() {
                       className="mt-3"
                       size="sm"
                       onClick={() => {
-                        form.reset({ ...form.getValues(), ...detail.data, month: detail.month, facilityId: detail.facilityId, unit: detail.unit });
+                        openSubmission(detail);
                         setDetail(null);
                         setTab("entry");
                         toast.info(`Loaded ${detail.id} into the entry form`, { description: "Correct the values, then submit again." });
@@ -516,6 +559,24 @@ export default function ActivityPage() {
                     ))}
                   </dl>
                 </SectionCard>
+                {(detail.unitData?.length ?? 0) > 1 ? (
+                  <SectionCard title="By production unit" description="The facility quantities above are the sum of these units (operating hours: the longest-running unit).">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead><tr className="text-left text-muted-foreground"><th className="py-1 pr-3 font-medium">Unit</th>{numericFields.filter((f) => f.name !== "operatingHours").map((f) => <th key={f.name} className="px-2 py-1 text-right font-medium">{f.label.split(" ")[0]}</th>)}<th className="px-2 py-1 text-right font-medium">Hours</th></tr></thead>
+                        <tbody>
+                          {detail.unitData!.map((u) => (
+                            <tr key={u.unit} className="border-t border-border">
+                              <td className="py-1 pr-3">{u.unit}</td>
+                              {numericFields.filter((f) => f.name !== "operatingHours").map((f) => <td key={f.name} className="tabular px-2 py-1 text-right">{(u.data[f.name as keyof typeof u.data] as number).toLocaleString("en-IN")}</td>)}
+                              <td className="tabular px-2 py-1 text-right">{u.data.operatingHours}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </SectionCard>
+                ) : null}
                 {detail.anomalies.length ? (
                   <SectionCard title="Anomaly flags" description="Raised by validation rules">
                     <ul className="list-disc space-y-1 pl-4 text-sm text-muted-foreground">

@@ -22,6 +22,13 @@ class AuditRepository(BaseRepository):
             doc.pop(k, None)
         return doc
 
+    # The audit trail is append-only: nothing in the application may change or remove an entry.
+    def update(self, id_: str, changes):  # type: ignore[override]
+        raise NotImplementedError("audit entries are immutable")
+
+    def delete(self, id_: str):  # type: ignore[override]
+        raise NotImplementedError("audit entries are immutable")
+
     def log(self, *, who: str, action: str, target: str, detail: str, user_id: str | None = None) -> None:
         self.create(
             {

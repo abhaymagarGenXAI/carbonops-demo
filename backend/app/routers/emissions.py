@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from app.core.deps import SUSTAINABILITY_MANAGER, CurrentUser, Db, require_roles
+from app.core.deps import CurrentUser, Db, require_permission
 from app.repositories.emission import EmissionRecordRepository
 from app.schemas.emission import EmissionRecordOut, RecalculateRequest, RecalculateResult
 from app.schemas.submission import ReviewRequest
@@ -22,7 +22,7 @@ def list_emissions(
 
 @router.post("/recalculate", response_model=RecalculateResult, summary="Recalculate emissions from stored activity data")
 def recalculate_emissions(
-    body: RecalculateRequest, db: Db, user: dict = Depends(require_roles(SUSTAINABILITY_MANAGER))
+    body: RecalculateRequest, db: Db, user: dict = Depends(require_permission("carbon.recalculate"))
 ):
     return carbon.recalculate(db, user, month=body.month, facility_id=body.facility_id, dry_run=body.dry_run)
 
@@ -37,6 +37,6 @@ def get_emission(emission_id: str, db: Db, _: CurrentUser):
 
 @router.post("/{emission_id}/review", response_model=EmissionRecordOut, summary="Approve / reject a calculation")
 def review_emission(
-    emission_id: str, body: ReviewRequest, db: Db, user: dict = Depends(require_roles(SUSTAINABILITY_MANAGER))
+    emission_id: str, body: ReviewRequest, db: Db, user: dict = Depends(require_permission("carbon.review"))
 ):
     return svc.review_emission(db, user, emission_id, body)

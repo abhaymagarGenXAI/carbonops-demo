@@ -63,7 +63,7 @@ def set_status(db: Database, user: Mapping[str, Any], period: str, status: str) 
     if status == "Locked":
         by_fac = {s["facilityId"]: s for s in SubmissionRepository(db).list({"month": period})}
         problems = [f"{s['id']} is {s['status']}" for s in by_fac.values() if s["status"] != "Approved"]
-        problems += [f"{f['name']} has no submission" for f in FacilityRepository(db).list() if f["id"] not in by_fac]
+        problems += [f"{f['name']} has no submission" for f in FacilityRepository(db).list() if f.get("active", True) is not False and f["id"] not in by_fac]
         if problems:
             raise conflict(f"{period} cannot be locked until every facility has an approved submission: {'; '.join(problems[:5])}"
                            f"{'…' if len(problems) > 5 else ''}")

@@ -7,7 +7,7 @@ submitted until the data is corrected (drafts can always be saved).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import replace, dataclass, field
 from typing import Any, Mapping, Sequence
 
 # activity field -> (label, unit) for the sources that drive emissions
@@ -40,6 +40,7 @@ class ValidationConfig:
     zero_enabled: bool = True
     zero_block: bool = False
     limits: tuple[Limit, ...] = (Limit("diesel", 250_000),)  # the original built-in rule
+    energy_variance_pct: float = 14.0  # Energy Management: |month-on-month variance| above this marks a record as an Anomaly
     inspection_interval_days: int = 150  # asset inspection considered overdue after this many days
 
 
@@ -95,6 +96,29 @@ def check_activity(
                                     f"{label} {value:,.0f} {unit} is {abs(dev):.0f}% {direction} the {ref}", round(dev, 1),
                                     blocking=high and config.spike_block_high))
     return findings
+
+
+def unit_history(subs: Sequence[Mapping[str, Any]], month: str, unit: str) -> list[Mapping[str, Any]]:
+    """One production unit's figures in earlier non-draft submissions, newest first (older single-unit records count too)."""
+    out: list[Mapping[str, Any]] = []
+    for s in sorted((s for s in subs if s["month"] < month and s["status"] != "Draft"), key=lambda s: s["month"], reverse=True):
+        lines = s.get("unitData") or [{"unit": s.get("unit"), "data": s.get("data", {})}]
+        out.extend(ln["data"] for ln in lines if ln.get("unit") == unit)
+    return out
+
+
+def unit_findings(
+    lines: Sequence[tuple[str, Mapping[str, Any]]], subs: Sequence[Mapping[str, Any]], month: str, config: ValidationConfig
+) -> list[tuple[str, Finding]]:
+    """Spike / zero checks per production unit against that unit's own history, so a spike in one unit cannot hide behind a quiet
+    one. Facility control limits stay facility-level. Only for multi-unit submissions."""
+    if len(lines) < 2:
+        return []
+    cfg = replace(config, limits=())
+    out: list[tuple[str, Finding]] = []
+    for unit, data in lines:
+        out.extend((unit, f) for f in check_activity(data, unit_history(subs, month, unit), cfg))
+    return out
 
 
 def history_before(subs: Sequence[Mapping[str, Any]], month: str) -> list[Mapping[str, Any]]:

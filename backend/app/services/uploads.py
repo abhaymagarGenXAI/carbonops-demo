@@ -24,8 +24,13 @@ ALLOWED: dict[str, tuple[str, str]] = {
     "xlsx": ("XLSX", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
     "csv": ("CSV", "text/csv"),
     "docx": ("DOCX", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    "pptx": ("PPTX", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+    "txt": ("TXT", "text/plain"),
+    "png": ("PNG", "image/png"),
+    "jpg": ("JPG", "image/jpeg"),
+    "jpeg": ("JPG", "image/jpeg"),
 }
-_ZIP_MARKER = {"xlsx": "xl/workbook.xml", "docx": "word/document.xml"}
+_ZIP_MARKER = {"xlsx": "xl/workbook.xml", "docx": "word/document.xml", "pptx": "ppt/presentation.xml"}
 
 
 def upload_root() -> Path:
@@ -70,9 +75,48 @@ def verify_content(ext: str, content: bytes) -> None:
                     raise bad
         except zipfile.BadZipFile:
             raise bad from None
-    elif ext == "csv":
+    elif ext in ("csv", "txt"):
         if b"\x00" in content:
             raise bad
+    elif ext == "png":
+        if not content.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise bad
+    elif ext in ("jpg", "jpeg"):
+        if not content.startswith(b"\xff\xd8\xff"):
+            raise bad
+
+
+def scan(content: bytes) -> None:
+    """Virus scan through a ClamAV daemon (INSTREAM over TCP) when `clamav_host` is configured; otherwise a no-op.
+    Fails closed: if scanning is switched on and the daemon cannot be reached the upload is refused (503)."""
+    import socket
+    import struct
+
+    from app.core.config import get_settings
+
+    cfg = get_settings()
+    if not cfg.clamav_host:
+        return
+    try:
+        with socket.create_connection((cfg.clamav_host, cfg.clamav_port), timeout=10) as s:
+            s.sendall(b"zINSTREAM\0")
+            for i in range(0, len(content), 65536):
+                chunk = content[i : i + 65536]
+                s.sendall(struct.pack("!I", len(chunk)) + chunk)
+            s.sendall(struct.pack("!I", 0))
+            reply = b""
+            while not reply.endswith(b"\0") and len(reply) < 4096:
+                part = s.recv(1024)
+                if not part:
+                    break
+                reply += part
+    except OSError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "File scanner is unavailable; the file was not stored") from exc
+    text = reply.rstrip(b"\0").decode("utf-8", "replace")
+    if text.endswith("FOUND"):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "The file was rejected by the virus scanner")
+    if not text.endswith("OK"):
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "File scanner returned an unexpected answer; the file was not stored")
 
 
 def human_size(n: int) -> str:

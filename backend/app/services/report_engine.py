@@ -63,7 +63,7 @@ def summarise(chosen: Sequence[Mapping[str, Any]], all_records: Sequence[Mapping
     total = tot["total"]
 
     # coverage: which months in the period are fully approved, and what was left out
-    fac_ids = [f["id"] for f in facilities if not facility_id or f["id"] == facility_id]
+    fac_ids = [f["id"] for f in facilities if (f["id"] == facility_id if facility_id else f.get("active", True) is not False)]  # current boundary
     agg = te.aggregate(r for r in all_records if not facility_id or r["facilityId"] == facility_id)
     in_range = sorted(m for m in {r["month"] for r in all_records} if (not month_from or m >= month_from) and (not month_to or m <= month_to))
     complete = set(te.complete_months(agg, fac_ids))

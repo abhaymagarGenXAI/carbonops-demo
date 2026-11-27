@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, status
 
-from app.core.deps import PLANT_ENGINEER, SUSTAINABILITY_MANAGER, CurrentUser, Db, require_roles
+from app.core.deps import CurrentUser, Db, require_permission
 from app.repositories.energy import EnergyRecordRepository
 from app.repositories.facility import FacilityRepository
+from app.services import facilities as fac_svc
 from app.schemas.common import DeleteResult
 from app.repositories.submission import SubmissionRepository
 from app.schemas.energy import (
@@ -26,7 +27,7 @@ def list_energy(
 
 @router.post("/reconcile", response_model=EnergyReconcileResult, summary="Recompute energy records from submissions")
 def reconcile_energy(
-    body: EnergyReconcileRequest, db: Db, user: dict = Depends(require_roles(SUSTAINABILITY_MANAGER))
+    body: EnergyReconcileRequest, db: Db, user: dict = Depends(require_permission("energy.reconcile"))
 ):
     return svc.reconcile(db, user, month=body.month, facility_id=body.facility_id, dry_run=body.dry_run)
 
@@ -40,10 +41,11 @@ def get_energy(record_id: str, db: Db, _: CurrentUser):
 
 
 @router.post("", response_model=EnergyRecordOut, status_code=status.HTTP_201_CREATED)
-def create_energy(body: EnergyRecordCreate, db: Db, user: dict = Depends(require_roles(PLANT_ENGINEER))):
+def create_energy(body: EnergyRecordCreate, db: Db, user: dict = Depends(require_permission("energy.edit"))):
     facility = FacilityRepository(db).get(body.facility_id)
     if facility is None:
         raise not_found("Facility", body.facility_id)
+    fac_svc.assert_active(db, body.facility_id)
     if SubmissionRepository(db).get_by_facility_month(body.facility_id, body.month):
         raise conflict(f"A submission exists for {body.month}; energy quantities are derived from it and cannot be added separately")
     data = body.model_dump(by_alias=True)
@@ -56,7 +58,7 @@ def create_energy(body: EnergyRecordCreate, db: Db, user: dict = Depends(require
 
 @router.patch("/{record_id}", response_model=EnergyRecordOut)
 def update_energy(
-    record_id: str, body: EnergyRecordUpdate, db: Db, user: dict = Depends(require_roles(PLANT_ENGINEER))
+    record_id: str, body: EnergyRecordUpdate, db: Db, user: dict = Depends(require_permission("energy.edit"))
 ):
     repo = EnergyRecordRepository(db)
     changes = body.model_dump(by_alias=True, exclude_none=True)
@@ -71,7 +73,7 @@ def update_energy(
 
 
 @router.delete("/{record_id}", response_model=DeleteResult)
-def delete_energy(record_id: str, db: Db, user: dict = Depends(require_roles(PLANT_ENGINEER))):
+def delete_energy(record_id: str, db: Db, user: dict = Depends(require_permission("energy.edit"))):
     repo = EnergyRecordRepository(db)
     current = repo.get(record_id)
     if current is None:

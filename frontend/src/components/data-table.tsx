@@ -1,6 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { ArrowDown, ArrowUp, ChevronsUpDown, Inbox, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -23,6 +24,16 @@ export interface Column<T> {
   className?: string;
 }
 
+/** Optional multi-select. The page owns the Set of selected keys and supplies the bulk-action buttons. */
+export interface Selection<T> {
+  selected: Set<string>;
+  onChange: (next: Set<string>) => void;
+  /** Rows that cannot be picked (e.g. a record in use) return false. */
+  isSelectable?: (row: T) => boolean;
+  /** Bulk-action buttons shown while something is selected. */
+  actions: ReactNode;
+}
+
 interface Props<T> {
   data: T[];
   columns: Column<T>[];
@@ -36,6 +47,7 @@ interface Props<T> {
   emptyTitle?: string;
   emptyHint?: string;
   actions?: (row: T) => ReactNode;
+  selection?: Selection<T> | undefined;
 }
 
 export function DataTable<T>({
@@ -51,6 +63,7 @@ export function DataTable<T>({
   emptyTitle = "No records found",
   emptyHint = "Adjust your filters or search terms to see more results.",
   actions,
+  selection,
 }: Props<T>) {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<{ key: string; dir: "asc" | "desc" } | null>(null);
@@ -77,6 +90,24 @@ export function DataTable<T>({
   const current = Math.min(page, pages - 1);
   const rows = filtered.slice(current * pageSize, current * pageSize + pageSize);
 
+  const pickable = selection ? filtered.filter((r) => selection.isSelectable?.(r) ?? true) : [];
+  const pickedHere = selection ? pickable.filter((r) => selection.selected.has(rowKey(r))).length : 0;
+  const toggleAll = () => {
+    if (!selection) return;
+    const next = new Set(selection.selected);
+    const all = pickable.length > 0 && pickedHere === pickable.length;
+    pickable.forEach((r) => (all ? next.delete(rowKey(r)) : next.add(rowKey(r))));
+    selection.onChange(next);
+  };
+  const toggleOne = (row: T) => {
+    if (!selection) return;
+    const next = new Set(selection.selected);
+    const k = rowKey(row);
+    if (next.has(k)) next.delete(k);
+    else next.add(k);
+    selection.onChange(next);
+  };
+
   return (
     <div className="panel overflow-hidden">
       <div className="flex flex-col gap-3 border-b border-border p-3 sm:flex-row sm:items-center sm:justify-between">
@@ -99,10 +130,26 @@ export function DataTable<T>({
         <div className="flex flex-wrap items-center gap-2">{toolbar}</div>
       </div>
 
+      {selection && selection.selected.size > 0 ? (
+        <div className="flex flex-wrap items-center gap-2 border-b border-border bg-primary/5 px-3 py-2 text-sm">
+          <span className="font-medium">{selection.selected.size} selected</span>
+          <Button variant="ghost" size="sm" onClick={() => selection.onChange(new Set())}>Clear</Button>
+          <div className="ml-auto flex flex-wrap items-center gap-2">{selection.actions}</div>
+        </div>
+      ) : null}
       <div className="overflow-x-auto">
         <Table>
           <TableHeader>
             <TableRow className="bg-secondary/60 hover:bg-secondary/60">
+              {selection ? (
+                <TableHead className="w-10">
+                  <Checkbox
+                    aria-label="Select all matching records"
+                    checked={pickable.length > 0 && pickedHere === pickable.length ? true : pickedHere > 0 ? "indeterminate" : false}
+                    onCheckedChange={toggleAll}
+                  />
+                </TableHead>
+              ) : null}
               {columns.map((c) => (
                 <TableHead
                   key={c.key}
@@ -143,6 +190,7 @@ export function DataTable<T>({
             {loading
               ? Array.from({ length: 5 }).map((_, i) => (
                   <TableRow key={i}>
+                    {selection ? <TableCell /> : null}
                     {columns.map((c) => (
                       <TableCell key={c.key}>
                         <Skeleton className="h-4 w-full" />
@@ -157,6 +205,16 @@ export function DataTable<T>({
                     onClick={onRowClick ? () => onRowClick(row) : undefined}
                     className={cn("transition-colors", onRowClick && "cursor-pointer")}
                   >
+                    {selection ? (
+                      <TableCell className="w-10 py-2.5" onClick={(e) => e.stopPropagation()}>
+                        <Checkbox
+                          aria-label={`Select ${rowKey(row)}`}
+                          disabled={!(selection.isSelectable?.(row) ?? true)}
+                          checked={selection.selected.has(rowKey(row))}
+                          onCheckedChange={() => toggleOne(row)}
+                        />
+                      </TableCell>
+                    ) : null}
                     {columns.map((c) => (
                       <TableCell
                         key={c.key}

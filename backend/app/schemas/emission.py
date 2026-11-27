@@ -29,6 +29,8 @@ class EmissionRecordOut(CamelModel):
     comments: list[EmissionComment] = Field(default_factory=list)
     # calculation trace (absent on legacy records until a recalculation links them)
     factor_id: str | None = None
+    factor_version_id: str | None = None
+    emission_source_id: str | None = None
     submission_id: str | None = None
     formula: str | None = None
     calc_note: str | None = None
@@ -62,7 +64,9 @@ class EmissionFactorUpdate(CamelModel):
 
 
 class EmissionFactorOut(EmissionFactorBase):
-    id: str
+    id: str  # the factor VERSION id
+    emission_source_id: str | None = None
+    valid_to: str | None = None  # exclusive end of validity; null = open-ended
 
 
 class RecalculateRequest(CamelModel):

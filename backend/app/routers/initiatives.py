@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, status
 
-from app.core.deps import SUSTAINABILITY_MANAGER, CurrentUser, Db, require_roles
+from app.core.deps import CurrentUser, Db, require_permission
 from app.repositories.initiative import InitiativeRepository
 from app.schemas.common import DeleteResult
 from app.schemas.initiative import AdvanceRequest, AssumptionsIn, AssumptionsOut, InitiativeCreate, InitiativeOut, InitiativeUpdate
@@ -11,7 +11,7 @@ from app.services import initiatives as svc
 from app.services.common import audit, not_found
 
 router = APIRouter(prefix="/initiatives", tags=["initiatives"])
-_manager = require_roles(SUSTAINABILITY_MANAGER)
+_manager = require_permission("initiative.manage")
 
 
 @router.get("", response_model=list[InitiativeOut])

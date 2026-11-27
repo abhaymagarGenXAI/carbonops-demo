@@ -19,13 +19,29 @@ SUSPENDED = "h.shaikh@carbonops.ongc"
 
 @pytest.fixture()
 def db():
-    database = mongomock.MongoClient(tz_aware=True)["carbon_ops_test"]
+    # Set TEST_MONGODB_URI to run the whole suite against a real MongoDB (CI does); default is in-memory mongomock.
+    uri = os.environ.get("TEST_MONGODB_URI")
+    if uri:
+        import pymongo
+
+        mc = pymongo.MongoClient(uri, tz_aware=True)
+        mc.drop_database("carbon_ops_test")
+        database = mc["carbon_ops_test"]
+        from app.db.indexes import ensure_indexes
+
+        ensure_indexes(database)
+    else:
+        mc = None
+        database = mongomock.MongoClient(tz_aware=True)["carbon_ops_test"]
     override_database(database)
     from app.seed.seed import run
 
     run()
     yield database
     override_database(None)
+    if mc is not None:
+        mc.drop_database("carbon_ops_test")
+        mc.close()
 
 
 @pytest.fixture()

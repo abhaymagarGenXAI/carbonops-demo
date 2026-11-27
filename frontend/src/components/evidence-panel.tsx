@@ -10,6 +10,9 @@ import { useStore } from "@/lib/store";
 import { useAuth } from "@/context/AuthContext";
 import type { DocumentRec } from "@/types/domain";
 
+/** File types the server accepts for evidence (it also checks the real content, not just the name). */
+export const EVIDENCE_ACCEPT = ".pdf,.xlsx,.csv,.docx,.pptx,.txt,.png,.jpg,.jpeg";
+
 export const EVIDENCE_TYPES = [
   "Fuel Bills", "Electricity Bills", "Calibration Reports", "Inspection Reports",
   "Emission Certificates", "Environmental Documents", "Supporting Spreadsheets",
@@ -20,9 +23,9 @@ export function EvidencePanel({ facilityId, month, canUpload, canRemove = canUpl
   const { documents, submissions, facilityName } = useStore();
   const upload = useUploadDocument();
   const remove = useDeleteDocument();
-  const { user } = useAuth();
+  const { user, hasPermission } = useAuth();
   const me = user?.name;
-  const reviewer = user?.appRole === "Sustainability Manager" || user?.appRole === "Administrator";
+  const reviewer = hasPermission("activity.review"); // may remove anyone's evidence file (mirrors the API rule)
   const input = useRef<HTMLInputElement>(null);
   const [type, setType] = useState<string>(EVIDENCE_TYPES[0]);
   const docs = documents.filter((d) => d.facilityId === facilityId && d.month === month);
@@ -60,14 +63,14 @@ export function EvidencePanel({ facilityId, month, canUpload, canRemove = canUpl
   };
 
   return (
-    <SectionCard title="Evidence files" description={`${facilityName(facilityId)} · ${month} · ${docs.length} file(s) · PDF, XLSX, CSV or DOCX, up to 20 MB`}>
+    <SectionCard title="Evidence files" description={`${facilityName(facilityId)} · ${month} · ${docs.length} file(s) · PDF, Excel, CSV, Word, PowerPoint, TXT, PNG or JPG, up to 20 MB`}>
       {canUpload && (
         <div className="mb-3 flex gap-2">
           <Select value={type} onValueChange={setType}>
             <SelectTrigger className="min-w-0 flex-1" aria-label="Evidence type"><SelectValue /></SelectTrigger>
             <SelectContent>{EVIDENCE_TYPES.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
           </Select>
-          <input ref={input} type="file" hidden accept=".pdf,.xlsx,.csv,.docx" data-testid="evidence-input" onChange={(e) => onPick(e.target.files?.[0])} />
+          <input ref={input} type="file" hidden accept={EVIDENCE_ACCEPT} data-testid="evidence-input" onChange={(e) => onPick(e.target.files?.[0])} />
           <Button type="button" variant="outline" disabled={upload.isPending} onClick={() => input.current?.click()}>
             <Paperclip className="size-4" /> {upload.isPending ? "Uploading…" : "Attach"}
           </Button>

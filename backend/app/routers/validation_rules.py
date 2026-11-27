@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from app.core.deps import SUSTAINABILITY_MANAGER, CurrentUser, Db, require_roles
+from app.core.deps import CurrentUser, Db, require_permission
 from app.schemas.validation_rules import ValidationRulesIn, ValidationRulesOut
 from app.services import rules_config
 from app.services.validation import Limit, ValidationConfig
@@ -16,12 +16,18 @@ def get_rules(db: Db, _: CurrentUser):
 
 
 @router.put("", response_model=ValidationRulesOut, summary="Replace the validation configuration")
-def put_rules(body: ValidationRulesIn, db: Db, user: dict = Depends(require_roles(SUSTAINABILITY_MANAGER))):
+def put_rules(body: ValidationRulesIn, db: Db, user: dict = Depends(require_permission("rules.manage"))):
     cfg = ValidationConfig(
         spike_enabled=body.spike_enabled, spike_pct=body.spike_pct, high_pct=body.high_pct,
         history_months=body.history_months, spike_block_high=body.spike_block_high,
         zero_enabled=body.zero_enabled, zero_block=body.zero_block,
         limits=tuple(Limit(l.field, l.max, l.enabled, l.block) for l in body.limits),
-        inspection_interval_days=body.inspection_interval_days,
+        inspection_interval_days=body.inspection_interval_days, energy_variance_pct=body.energy_variance_pct,
     )
-    return rules_config.save(db, user, cfg)
+    old = rules_config.load(db)
+    out = rules_config.save(db, user, cfg)
+    if old.energy_variance_pct != cfg.energy_variance_pct:  # re-classify existing energy records with the new band
+        from app.services import energy
+
+        energy.reconcile(db, user, month=None, facility_id=None, dry_run=False)
+    return out

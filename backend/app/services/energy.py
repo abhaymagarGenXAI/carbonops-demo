@@ -10,7 +10,9 @@ from app.repositories.facility import FacilityRepository
 from app.repositories.reference import ReferenceRepository
 from app.repositories.submission import SubmissionRepository
 from app.services import carbon_engine as ce
+from app.db import collections as C
 from app.services import energy_engine as ee
+from app.services import rules_config
 from app.services.common import audit, conflict
 from app.utils.time import to_display, utcnow
 
@@ -22,7 +24,8 @@ def _apply(repo: EnergyRecordRepository, rec: Mapping[str, Any], *, dry_run: boo
     old = repo.get_raw(rec["id"])
     if old is None:
         if not dry_run:
-            repo.create({**rec, "meterRef": "", "invoiceRef": "", "cost": 0})
+            sid = repo.col.database[C.ENERGY_STREAMS].find_one({"streamName": rec.get("stream")}, {"_id": 0, "streamId": 1})
+            repo.create({**rec, "energyStreamId": sid["streamId"] if sid else None, "meterRef": "", "invoiceRef": "", "cost": 0})
         return "create", None
     if all(old.get(k, False if k == "excluded" else None) == rec[k] for k in COMPARE):
         return "unchanged", old
@@ -31,13 +34,13 @@ def _apply(repo: EnergyRecordRepository, rec: Mapping[str, Any], *, dry_run: boo
     return "update", old
 
 
-def _derive(subs_by_month: Mapping[str, Mapping[str, Any]], facility: Mapping[str, Any], month: str):
+def _derive(subs_by_month: Mapping[str, Mapping[str, Any]], facility: Mapping[str, Any], month: str, band: float = ee.VARIANCE_BAND_PCT):
     sub = subs_by_month[month]
     prev = subs_by_month.get(ce.prev_month(month))
     if prev is not None and prev["status"] in ee.EXCLUDED_STATUSES:
         prev = None  # never compare against unfinished / rejected figures
     return ee.derive_records(facility_id=facility["id"], facility_code=facility["code"], submission=sub,
-                             prev_data=prev["data"] if prev else None)
+                             prev_data=prev["data"] if prev else None, band=band)
 
 
 def sync_submission_energy(db: Database, sub: Mapping[str, Any]) -> None:
@@ -45,11 +48,12 @@ def sync_submission_energy(db: Database, sub: Mapping[str, Any]) -> None:
     facility = FacilityRepository(db).get(sub["facilityId"])
     if facility is None:
         return
+    band = rules_config.load(db).energy_variance_pct
     subs = {s["month"]: s for s in SubmissionRepository(db).list({"facilityId": sub["facilityId"]})}
     repo = EnergyRecordRepository(db)
     for month in (sub["month"], ce.next_month(sub["month"])):
         if month in subs:
-            for rec in _derive(subs, facility, month):
+            for rec in _derive(subs, facility, month, band):
                 _apply(repo, rec, dry_run=False)
 
 
@@ -62,6 +66,7 @@ def reconcile(db: Database, user: Mapping[str, Any], *, month: str | None, facil
     for s in SubmissionRepository(db).list(filters):
         all_subs.setdefault(s["facilityId"], {})[s["month"]] = s
     repo = EnergyRecordRepository(db)
+    band = rules_config.load(db).energy_variance_pct
     counts = {"created": 0, "updated": 0, "unchanged": 0}
     items: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
@@ -79,7 +84,7 @@ def reconcile(db: Database, user: Mapping[str, Any], *, month: str | None, facil
                 locked_skips[m] = locked_skips.get(m, 0) + 1
                 continue
             evaluated += 1
-            for rec in _derive(by_month, facility, m):
+            for rec in _derive(by_month, facility, m, band):
                 action, old = _apply(repo, rec, dry_run=dry_run)
                 counts[{"create": "created", "update": "updated", "unchanged": "unchanged"}[action]] += 1
                 if action != "unchanged" and len(items) < 500:

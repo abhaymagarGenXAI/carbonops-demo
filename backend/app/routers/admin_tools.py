@@ -9,10 +9,10 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends
 
-from app.core.deps import ADMINISTRATOR, Db, require_roles
+from app.core.deps import Db, require_permission
 from app.repositories.facility import FacilityRepository
 
-router = APIRouter(prefix="/admin/db", tags=["admin tools"], dependencies=[Depends(require_roles(ADMINISTRATOR))])
+router = APIRouter(prefix="/admin/db", tags=["admin tools"], dependencies=[Depends(require_permission("db.tools"))])
 
 SEED_FILE = Path(__file__).resolve().parent.parent / "seed" / "seed_data.json"
 

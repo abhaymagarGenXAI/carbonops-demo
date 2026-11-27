@@ -7,10 +7,13 @@ import type { ApiError } from "@/services/api";
 import {
   alertsApi,
   assetsApi,
+  masterDataApi,
   auditApi,
   documentsApi,
   emissionFactorsApi,
   scope3Api,
+  forecastApi,
+  assistantApi,
   emissionsRecalc,
   emissionsApi,
   energyApi,
@@ -21,6 +24,7 @@ import {
   referenceApi,
   submissionsApi,
   usersApi,
+  rolesApi,
   type AssetChanges,
   type FacilityChanges,
   type FacilityInput,
@@ -43,6 +47,9 @@ import type {
   Scope3Input,
   ValidationRules,
   Workflow,
+  UserCreateInput,
+  UserChanges,
+  RoleInput,
 } from "@/types/domain";
 
 /** Data other users change (submissions, reviews, evidence, alerts) is re-read every 15 s while the tab is visible,
@@ -60,6 +67,8 @@ export const qk = {
   initiatives: ["initiatives"] as const,
   documents: ["documents"] as const,
   users: ["users"] as const,
+  roles: ["roles"] as const,
+  permissions: ["permissions"] as const,
   audit: ["audit"] as const,
   alerts: ["alerts"] as const,
   rules: ["validation-rules"] as const,
@@ -75,9 +84,12 @@ export const useEnergyRecords = () => useQuery({ queryKey: qk.energy, queryFn: e
 export const useEmissions = () => useQuery({ queryKey: qk.emissions, queryFn: emissionsApi.list, ...LIVE });
 export const useEmissionFactors = () => useQuery({ queryKey: qk.factors, queryFn: emissionFactorsApi.list });
 export const useInitiatives = () => useQuery({ queryKey: qk.initiatives, queryFn: initiativesApi.list });
+export const useDocumentRepository = () => useQuery({ queryKey: [...qk.documents, "repository"], queryFn: documentsApi.repository, ...LIVE });
 export const useDocuments = () => useQuery({ queryKey: qk.documents, queryFn: documentsApi.list, ...LIVE });
 export const useAuditTrail = () => useQuery({ queryKey: qk.audit, queryFn: auditApi.list, ...LIVE });
 export const useUsers = (enabled: boolean) => useQuery({ queryKey: qk.users, queryFn: usersApi.list, enabled });
+export const useRoles = (enabled: boolean) => useQuery({ queryKey: qk.roles, queryFn: rolesApi.list, enabled });
+export const usePermissions = (enabled: boolean) => useQuery({ queryKey: qk.permissions, queryFn: rolesApi.permissions, enabled });
 
 const useReference = <T,>(key: string) =>
   useQuery({ queryKey: qk.reference(key), queryFn: () => referenceApi.get<T>(key), staleTime: 5 * 60_000 });
@@ -87,11 +99,14 @@ export const useInventoryPreview = (q: InventoryQuery, enabled: boolean) =>
   useQuery({ queryKey: ["reports", "inventory", q], queryFn: () => reportsApi.preview(q), enabled });
 export const useScope3 = () => useQuery({ queryKey: qk.scope3, queryFn: scope3Api.list, ...LIVE });
 export const useScope3Categories = () => useQuery({ queryKey: ["scope3", "categories"], queryFn: scope3Api.categories, staleTime: Infinity });
+export const useForecast = (horizon = 12) => useQuery({ queryKey: ["forecast", horizon], queryFn: () => forecastApi.get(horizon), ...LIVE });
+export const useAssistantStatus = () => useQuery({ queryKey: ["assistant", "status"], queryFn: assistantApi.status, refetchInterval: 20_000 });
+export const useAskAssistant = () => useApiMutation((q: string) => assistantApi.ask(q), []);
 export const useTargets = () => useQuery({ queryKey: qk.targets, queryFn: targetsApi.get, ...LIVE });
 export const useSaveBaseline = () => useApiMutation((b: { start: string; end: string }) => targetsApi.setBaseline(b), [qk.targets, qk.initiatives]);
 export const useSaveTargets = () => useApiMutation((t: EmissionTarget[]) => targetsApi.setTargets(t), [qk.targets, qk.initiatives]);
 export const useValidationRules = () => useQuery({ queryKey: qk.rules, queryFn: validationRulesApi.get });
-export const useSaveValidationRules = () => useApiMutation((b: ValidationRules) => validationRulesApi.save(b), [qk.rules, qk.submissions]);
+export const useSaveValidationRules = () => useApiMutation((b: ValidationRules) => validationRulesApi.save(b), [qk.rules, qk.submissions, qk.energy]);
 /** Alerts for one reporting period (period-specific checks follow it; rejections/rework are always listed). */
 export const useAlerts = (period?: string) => useQuery({ queryKey: [...qk.alerts, period ?? "default"], queryFn: () => alertsApi.list(period), enabled: !!period, ...LIVE });
 export const useAiAlerts = () => useQuery({ queryKey: qk.alerts, queryFn: () => alertsApi.list(), ...LIVE });
@@ -112,10 +127,31 @@ function useApiMutation<TVars, TData>(fn: (vars: TVars) => Promise<TData>, inval
   });
 }
 
+export const useSetUserAccess = () =>
+  useApiMutation((v: { id: string; roleId: string; facilityIds: string[] }) => usersApi.setAccess(v.id, { roleId: v.roleId, facilityIds: v.facilityIds }), [qk.users, qk.roles]);
+export const useSetUserStatus = () =>
+  useApiMutation((v: { id: string; status: "Active" | "Suspended" }) => usersApi.setStatus(v.id, v.status), [qk.users, qk.roles]);
+export const useCreateUser = () => useApiMutation((b: UserCreateInput) => usersApi.create(b), [qk.users, qk.roles]);
+export const useUpdateUser = () =>
+  useApiMutation((v: { id: string; changes: UserChanges }) => usersApi.update(v.id, v.changes), [qk.users, qk.roles]);
+export const useDeleteUser = () => useApiMutation((id: string) => usersApi.remove(id), [qk.users, qk.roles]);
+export const useResetUserPassword = () =>
+  useApiMutation((v: { id: string; newPassword: string }) => usersApi.resetPassword(v.id, v.newPassword), [qk.users]);
+
+export const useCreateRole = () => useApiMutation((b: RoleInput) => rolesApi.create(b), [qk.roles]);
+export const useUpdateRole = () =>
+  useApiMutation((v: { id: string; changes: { name?: string; description?: string } }) => rolesApi.update(v.id, v.changes), [qk.roles, qk.users]);
+export const useSetRolePermissions = () =>
+  useApiMutation((v: { id: string; permissions: string[] }) => rolesApi.setPermissions(v.id, v.permissions), [qk.roles, qk.users]);
+export const useDeleteRole = () => useApiMutation((id: string) => rolesApi.remove(id), [qk.roles]);
+
 export const useCreateFacility = () => useApiMutation((b: FacilityInput) => facilitiesApi.create(b), [qk.facilities]);
 export const useUpdateFacility = () =>
   useApiMutation((v: { id: string; changes: FacilityChanges }) => facilitiesApi.update(v.id, v.changes), [qk.facilities]);
-export const useDeleteFacility = () => useApiMutation((id: string) => facilitiesApi.remove(id), [qk.facilities]);
+export const useAddProductionUnit = () =>
+  useApiMutation((v: { id: string; name: string }) => facilitiesApi.addUnit(v.id, v.name), [qk.facilities, qk.assets]);
+export const useDeactivateFacility = () => useApiMutation((id: string) => facilitiesApi.deactivate(id), [qk.facilities, qk.assets, qk.submissions]);
+export const useReactivateFacility = () => useApiMutation((id: string) => facilitiesApi.reactivate(id), [qk.facilities]);
 
 export const useCreateAsset = () => useApiMutation((b: Asset) => assetsApi.create(b), [qk.assets]);
 export const useUpdateAsset = () =>
@@ -147,6 +183,8 @@ export const useOpenNextPeriod = () => useApiMutation(() => periodsApi.openNext(
 export const useSetPeriodStatus = () =>
   useApiMutation((v: { period: string; status: "In Review" | "Locked" }) => periodsApi.setStatus(v.period, v.status), [PERIODS]);
 
+export const useDiscardAlert = () => useApiMutation((v: { id: string; period?: string }) => alertsApi.discard(v.id, v.period), [qk.alerts]);
+export const useMasterImport = () => useApiMutation((v: { file: File; dryRun: boolean }) => masterDataApi.import(v.file, v.dryRun), [qk.facilities, qk.assets]);
 export const useDeleteDocument = () => useApiMutation((id: string) => documentsApi.remove(id), [qk.documents]);
 export const useUploadDocument = () => useApiMutation((v: Parameters<typeof documentsApi.upload>[0]) => documentsApi.upload(v), [qk.documents]);
 export const useImportCommit = () =>

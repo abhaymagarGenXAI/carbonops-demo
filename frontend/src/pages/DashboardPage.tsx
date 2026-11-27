@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useAlerts, useValidationRules } from "@/hooks/useApi";
+import { useAlerts, useDiscardAlert, useValidationRules } from "@/hooks/useApi";
 import { alertLink, alertLinkLabel } from "@/lib/alerts";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Link } from "react-router-dom";
@@ -10,18 +10,27 @@ import {
   ClipboardList,
   FileStack,
   Leaf,
+  Trash2,
   TriangleAlert,
 } from "lucide-react";
+import { toast } from "sonner";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { StatusBadge } from "@/components/status-badge";
 import { PageHeader, SectionCard, StatCard } from "@/components/page-parts";
+import { useAuth } from "@/context/AuthContext";
 import { useStore } from "@/lib/store";
 import { usePageMeta } from "@/hooks/use-page-meta";
 
 export default function DashboardPage() {
   usePageMeta("Operations Workspace — CarbonOps AI", "Daily operational workspace for decarbonization teams: pending submissions, approvals, AI alerts, data quality issues and reporting deadlines.");
-  const { currentPeriod: openPeriod, facilities, facilityName, recentActivity, reportingPeriods, role } = useStore();
+  const { currentPeriod: openPeriod, facilities, facilityName, recentActivity, reportingPeriods } = useStore();
+  const { canOpen, can } = useAuth();
+  const canDiscard = can("alert.discard");
+  const discard = useDiscardAlert();
+  const [toDiscard, setToDiscard] = useState<{ id: string; title: string } | null>(null);
+  const reviewer = canOpen("/approvals"); // roles that work the review queue
   const [picked, setPicked] = useState<string | null>(null);
   const currentPeriod = picked && reportingPeriods.some((p) => p.period === picked) ? picked : openPeriod; // viewed period
   const calendarMonth = new Date().toISOString().slice(0, 7);
@@ -41,7 +50,24 @@ export default function DashboardPage() {
   const overdueAssets = assets.filter((a) => a.status !== "Shutdown" && a.lastInspection < inspectionCutoff).length;
   const period = reportingPeriods.find((p) => p.period === currentPeriod);
   const activeInitiatives = initiatives.filter((i) => i.status === "In Progress" || i.status === "Planned").length;
-  const recentDocs = documents.slice(0, 5);
+  // newest 15 uploads only (a new upload pushes the oldest out); the card shows ~5 rows and scrolls
+  const recentDocs = [...documents].sort((a, b) => (b.uploadedAt || "").localeCompare(a.uploadedAt || "") || b.id.localeCompare(a.id)).slice(0, 15);
+  // unlocked periods by nearest submission deadline first, then locked ones newest first
+  const deadlines = [...reportingPeriods].sort((a, b) => {
+    const la = a.status === "Locked" ? 1 : 0, lb = b.status === "Locked" ? 1 : 0;
+    if (la !== lb) return la - lb;
+    return la ? b.period.localeCompare(a.period) : a.submissionDue.localeCompare(b.submissionDue);
+  });
+  const confirmDiscard = async () => {
+    if (!toDiscard) return;
+    try {
+      await discard.mutateAsync({ id: toDiscard.id, period: currentPeriod });
+      toast.success("Alert deleted");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not delete the alert");
+    }
+    setToDiscard(null);
+  };
 
   return (
     <div className="space-y-6">
@@ -124,7 +150,7 @@ export default function DashboardPage() {
           title="AI validation alerts"
           description={`Live, rule-based checks for ${currentPeriod}, outstanding rework/rejections in any open period, and asset inspections; thresholds are set in Approvals → Validation rules. They clear as soon as the issue is resolved.`}
         >
-          <ul className="space-y-3">
+          <ul className="max-h-[22rem] space-y-3 overflow-y-auto pr-1" tabIndex={0} aria-label="AI validation alerts">
             {aiAlerts.length === 0 && <li className="text-sm text-muted-foreground">No open alerts for this period.</li>}
             {aiAlerts.map((a) => (
               <li key={a.id} className="rounded-lg border border-border p-3">
@@ -133,9 +159,16 @@ export default function DashboardPage() {
                   <StatusBadge value={a.severity} />
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">{a.detail}</p>
-                <Link className="mt-2 inline-block text-xs font-medium text-primary hover:underline" to={alertLink(a, role)}>
-                  {a.action} → {alertLinkLabel(alertLink(a, role))}
-                </Link>
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <Link className="text-xs font-medium text-primary hover:underline" to={alertLink(a, reviewer)}>
+                    {a.action} → {alertLinkLabel(alertLink(a, reviewer))}
+                  </Link>
+                  {canDiscard ? (
+                    <Button variant="ghost" size="sm" className="h-7 shrink-0 gap-1 px-2 text-xs text-destructive hover:text-destructive" onClick={() => setToDiscard({ id: a.id, title: a.title })}>
+                      <Trash2 className="size-3.5" /> Discard
+                    </Button>
+                  ) : null}
+                </div>
               </li>
             ))}
           </ul>
@@ -159,8 +192,8 @@ export default function DashboardPage() {
 
         <div className="space-y-4">
           <SectionCard title="Upcoming reporting deadlines" description="Governance calendar">
-            <ul className="space-y-3">
-              {reportingPeriods.slice(-3).reverse().map((p) => (
+            <ul className="max-h-[10.25rem] space-y-3 overflow-y-auto pr-1" tabIndex={0} aria-label="Reporting deadlines">
+              {deadlines.map((p) => (
                 <li key={p.id} className="flex items-start gap-3">
                   <CalendarClock className="mt-0.5 size-4 text-muted-foreground" />
                   <div className="min-w-0 flex-1">
@@ -179,9 +212,9 @@ export default function DashboardPage() {
 
           <SectionCard
             title="Recently uploaded evidence"
-            description={`${documents.length} documents in repository`}
+            description={`Latest ${recentDocs.length} of ${documents.length} documents`}
           >
-            <ul className="space-y-2.5">
+            <ul className="max-h-[14rem] space-y-2.5 overflow-y-auto pr-1" tabIndex={0} aria-label="Recently uploaded evidence">
               {recentDocs.map((d) => (
                 <li key={d.id} className="flex items-center gap-2.5">
                   <FileStack className="size-4 shrink-0 text-muted-foreground" />
@@ -201,11 +234,6 @@ export default function DashboardPage() {
       <SectionCard
         title="Data quality issues requiring action"
         description={`Live issues for ${currentPeriod}: value spikes, zero readings and control-limit breaches in submitted data, plus overdue submissions and approvals. Fixed or approved data drops off automatically.`}
-        actions={
-          <Button variant="outline" size="sm" asChild>
-            <Link to={role === "Sustainability Manager" ? "/approvals" : "/activity"}>{role === "Sustainability Manager" ? "Open Approvals" : "Open Activity Data"}</Link>
-          </Button>
-        }
       >
         <div className="grid gap-3 md:grid-cols-2">
           {aiAlerts.filter((a) => ["anomaly", "due", "approval", "rework", "rejected"].includes(a.kind ?? "")).length === 0 ? (
@@ -234,6 +262,23 @@ export default function DashboardPage() {
           </p>
         ) : null}
       </SectionCard>
+
+      <AlertDialog open={!!toDiscard} onOpenChange={(o) => !o && setToDiscard(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this alert permanently?</AlertDialogTitle>
+            <AlertDialogDescription>
+              “{toDiscard?.title}” will be deleted for everyone and cannot be recovered. It only comes back if the underlying data changes and the check fires again.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={(e) => { e.preventDefault(); void confirmDiscard(); }} disabled={discard.isPending}>
+              {discard.isPending ? "Deleting…" : "Delete alert"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <p className="text-xs text-muted-foreground">
         Active initiatives: <span className="font-medium text-foreground">{activeInitiatives}</span> reduction projects in

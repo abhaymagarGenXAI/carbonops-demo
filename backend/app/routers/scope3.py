@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, status
 
-from app.core.deps import SUSTAINABILITY_MANAGER, CurrentUser, Db, require_roles
+from app.core.deps import CurrentUser, Db, require_permission
 from app.schemas.common import DeleteResult
 from app.schemas.scope3 import Scope3EntryIn, Scope3EntryOut, Scope3ReviewIn
 from app.services import scope3 as svc
@@ -38,5 +38,5 @@ def delete_entry(entry_id: str, db: Db, user: CurrentUser):
 
 
 @router.post("/{entry_id}/review", response_model=Scope3EntryOut)
-def review_entry(entry_id: str, body: Scope3ReviewIn, db: Db, user: dict = Depends(require_roles(SUSTAINABILITY_MANAGER))):
+def review_entry(entry_id: str, body: Scope3ReviewIn, db: Db, user: dict = Depends(require_permission("scope3.approve"))):
     return svc.review(db, user, entry_id, body.decision, body.comment)

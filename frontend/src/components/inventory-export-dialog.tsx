@@ -12,7 +12,7 @@ import type { InventoryQuery } from "@/types/domain";
 const fmt = (n: number) => n.toLocaleString("en-IN", { maximumFractionDigits: 2 });
 
 export function InventoryExportDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
-  const { reportingPeriods, facilities } = useStore();
+  const { reportingPeriods, allFacilities } = useStore();
   const months = reportingPeriods.map((p) => p.period);
   const [from, setFrom] = useState("all");
   const [to, setTo] = useState("all");
@@ -53,7 +53,7 @@ export function InventoryExportDialog({ open, onOpenChange }: { open: boolean; o
           </Select>
           <Select value={facility} onValueChange={setFacility}>
             <SelectTrigger className="h-9 w-48" aria-label="Facility"><SelectValue /></SelectTrigger>
-            <SelectContent><SelectItem value="all">All facilities</SelectItem>{facilities.map((f) => <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>)}</SelectContent>
+            <SelectContent><SelectItem value="all">All facilities</SelectItem>{allFacilities.map((f) => <SelectItem key={f.id} value={f.id}>{f.active === false ? `${f.name} (inactive)` : f.name}</SelectItem>)}</SelectContent>
           </Select>
           <Select value={basis} onValueChange={(v) => setBasis(v as "approved" | "pending")}>
             <SelectTrigger className="h-9 w-56" aria-label="Basis"><SelectValue /></SelectTrigger>

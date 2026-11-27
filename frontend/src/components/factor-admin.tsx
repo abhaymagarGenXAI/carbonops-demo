@@ -1,5 +1,9 @@
 import { useState } from "react";
-import { Pencil, Plus, Trash2 } from "lucide-react";
+import { Pencil, Plus, Sparkles, Trash2 } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { BulkConfirm } from "@/components/bulk-confirm";
+import { runBulk } from "@/lib/bulk";
+import { SCOPE3_SUGGESTIONS } from "@/lib/scope3-suggestions";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -20,21 +24,26 @@ const msg = (e: unknown) => (e instanceof Error ? e.message : "Unexpected error"
  *  the dialog then offers "New version" (same source, later valid-from) instead of editing the number. */
 export function FactorAdmin() {
   const { factors, emissions } = useStore();
-  const { user } = useAuth();
-  const canEdit = user?.appRole === "Administrator"; // the API allows factor changes for Administrators only
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission("factor.manage"); // mirrors the API: factor changes need this permission (Administrator by default)
   const { data: categories = [] } = useScope3Categories();
   const { data: s3Entries = [] } = useScope3();
   const create = useCreateFactor(), update = useUpdateFactor(), remove = useDeleteFactor();
   const [dlg, setDlg] = useState<{ mode: "new" | "edit" | "version"; factor?: EmissionFactor | undefined } | null>(null);
   const [f, setF] = useState<EmissionFactorInput>(blank);
   const [scopeFilter, setScopeFilter] = useState("all");
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [bulkDelete, setBulkDelete] = useState(false);
+  const [suggest, setSuggest] = useState(false);
+  const [chosen, setChosen] = useState<Set<string>>(new Set());
+  const [adding, setAdding] = useState(false);
 
   const cites = (id: string) => emissions.filter((e) => e.factorId === id).length + s3Entries.filter((e) => e.factorId === id).length;
   const open = (mode: "new" | "edit" | "version", factor?: EmissionFactor) => {
     setDlg({ mode, factor });
     if (mode === "new" || !factor) setF(blank);
-    else if (mode === "edit") setF({ ...factor, category: factor.category ?? "" });
-    else { const { id: _i, ...rest } = factor; setF({ ...rest, validFrom: "", status: "Active", category: factor.category ?? "" }); }
+    else if (mode === "edit") { const { emissionSourceId: _s, validTo: _t, ...rest } = factor; setF({ ...rest, category: factor.category ?? "" }); }
+    else { const { id: _i, emissionSourceId: _s, validTo: _t, ...rest } = factor; setF({ ...rest, validFrom: "", status: "Active", category: factor.category ?? "" }); }
   };
 
   const save = async () => {
@@ -66,6 +75,7 @@ export function FactorAdmin() {
     { key: "value", header: "Factor", align: "right", value: (x) => x.value, render: (x) => <span className="tabular">{x.value} <span className="text-muted-foreground">{x.unit}</span></span> },
     { key: "reference", header: "Reference", value: (x) => x.reference },
     { key: "validFrom", header: "Valid from", sortable: true, value: (x) => x.validFrom },
+    { key: "validTo", header: "Valid to", value: (x) => x.validTo ?? "", render: (x) => (x.validTo ? <span title="Superseded by the next version from this date">{x.validTo}</span> : <span className="text-muted-foreground">open</span>) },
     { key: "used", header: "Records citing", align: "right", value: (x) => cites(x.id) },
     { key: "status", header: "Status", value: (x) => x.status, render: (x) => <StatusBadge value={x.status} /> },
     ...(canEdit ? [{
@@ -89,16 +99,79 @@ export function FactorAdmin() {
           <SelectContent>{["all", "Scope 1", "Scope 2", "Scope 3"].map((s) => <SelectItem key={s} value={s}>{s === "all" ? "All scopes" : s}</SelectItem>)}</SelectContent>
         </Select>
         {canEdit
-          ? <Button size="sm" className="ml-auto" onClick={() => open("new")}><Plus className="size-4" /> Add factor</Button>
+          ? <div className="ml-auto flex gap-2">
+              <Button size="sm" variant="outline" onClick={() => { setChosen(new Set()); setSuggest(true); }}><Sparkles className="size-4" /> Suggested Scope 3 factors</Button>
+              <Button size="sm" onClick={() => open("new")}><Plus className="size-4" /> Add factor</Button>
+            </div>
           : <span className="ml-auto text-xs text-muted-foreground">Read-only — factors are maintained by an Administrator (an Administrator can open this tab via “View as”).</span>}
       </div>
       <DataTable data={rows} columns={columns} rowKey={(x) => x.id} pageSize={10}
+        selection={canEdit ? {
+          selected: picked, onChange: setPicked, isSelectable: (x) => cites(x.id) === 0, // a factor cited by records is frozen
+          actions: <Button size="sm" variant="outline" className="text-destructive" onClick={() => setBulkDelete(true)}><Trash2 className="size-4" /> Delete selected</Button>,
+        } : undefined}
         searchKeys={(x) => `${x.id} ${x.source} ${x.scope} ${x.reference} ${x.category ?? ""}`} searchPlaceholder="Search factor, source or reference…" />
       <p className="mt-3 text-xs text-muted-foreground">
         For each period the engine applies the factor with the latest “valid from” date on or before the start of that period. Factors cited by
         emission records cannot be edited or deleted; publish a new version instead. Scope 1/2 factors must use one of the platform’s sources and units;
         Scope 3 factors can be any name and unit (e.g. kgCO₂e/INR for spend-based, kgCO₂e/passenger-km for activity-based).
       </p>
+
+      <BulkConfirm
+        open={bulkDelete} title={`Delete ${picked.size} factor(s)?`} confirmLabel="Delete"
+        description="Only factors that no record cites can be deleted; any that cannot are reported and stay selected."
+        onCancel={() => setBulkDelete(false)}
+        onConfirm={async () => {
+          const { failed } = await runBulk([...picked], "factor(s) deleted", (id) => remove.mutateAsync(id));
+          setPicked(new Set(failed.map((x) => x.id)));
+          setBulkDelete(false);
+        }}
+      />
+
+      <Dialog open={suggest} onOpenChange={(o) => !o && !adding && setSuggest(false)}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Suggested Scope 3 factors</DialogTitle>
+            <DialogDescription>
+              Starter factors for an upstream oil &amp; gas operator. The values are approximate screening-level figures — tick the ones you want, add them, then open each and
+              replace the value and reference with the dataset your organisation adopts (DEFRA, IPCC, India GHG Program …). Factors already in the register are greyed out.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[50vh] space-y-1 overflow-y-auto pr-1">
+            {SCOPE3_SUGGESTIONS.map((x) => {
+              const exists = factors.some((e) => e.source === x.source && e.scope === "Scope 3");
+              return (
+                <label key={x.source} className={`flex items-start gap-3 rounded-md border border-border p-2 text-sm ${exists ? "opacity-50" : "cursor-pointer hover:bg-muted/50"}`}>
+                  <Checkbox
+                    className="mt-0.5" disabled={exists} checked={exists || chosen.has(x.source)}
+                    onCheckedChange={() => setChosen((p) => { const n = new Set(p); if (n.has(x.source)) n.delete(x.source); else n.add(x.source); return n; })}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="font-medium">{x.source}</span>
+                    <span className="block text-xs text-muted-foreground">Cat {x.category} · {x.value} {x.unit}</span>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={adding} onClick={() => setSuggest(false)}>Close</Button>
+            <Button
+              disabled={adding || chosen.size === 0}
+              onClick={async () => {
+                setAdding(true);
+                const list = SCOPE3_SUGGESTIONS.filter((x) => chosen.has(x.source));
+                const { failed } = await runBulk(list.map((x) => x.source), "factor(s) added", (src) => create.mutateAsync(list.find((x) => x.source === src)!));
+                setAdding(false);
+                setChosen(new Set(failed.map((x) => x.id)));
+                if (failed.length === 0) setSuggest(false);
+              }}
+            >
+              {adding ? "Adding…" : `Add ${chosen.size} selected`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!dlg} onOpenChange={(o) => !o && setDlg(null)}>
         <DialogContent className="sm:max-w-lg">

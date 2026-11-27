@@ -7,13 +7,15 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { SectionCard } from "@/components/page-parts";
 import { useInitiativeAnalysis, useSaveAssumptions } from "@/hooks/useApi";
+import { useAuth } from "@/context/AuthContext";
 import { useStore } from "@/lib/store";
 
 const fmt = (n: number | null | undefined, d = 0) => (n == null ? "—" : n.toLocaleString("en-IN", { maximumFractionDigits: d }));
 
 export function InitiativeAnalysis() {
-  const { role, facilityName } = useStore();
-  const canEdit = role === "Sustainability Manager";
+  const { facilityName } = useStore();
+  const { can } = useAuth();
+  const canEdit = can("initiative.manage");
   const { data, isLoading } = useInitiativeAnalysis();
   const save = useSaveAssumptions();
   const [form, setForm] = useState({ carbonValuePerTonne: "", discountRatePct: "", lifetimeYears: "" });

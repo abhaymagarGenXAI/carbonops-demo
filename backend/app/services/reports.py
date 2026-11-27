@@ -5,6 +5,7 @@ import csv
 import io
 from typing import Any, Mapping
 
+from app.utils.safe_cell import append_row, csv_row
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
@@ -84,7 +85,7 @@ def to_csv(db: Database, user: Mapping[str, Any], rep: Mapping[str, Any]) -> tup
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(TRACE_HEAD)
-    w.writerows(rep["trace"])
+    w.writerows(csv_row(r) for r in rep["trace"])
     _log(db, user, rep, "csv")
     return ("﻿" + buf.getvalue()).encode("utf-8"), f"ghg-calculation-trace-{_label(rep)}.csv"  # BOM so Excel reads ₂ etc.
 
@@ -103,7 +104,7 @@ def to_xlsx(db: Database, user: Mapping[str, Any], rep: Mapping[str, Any]) -> tu
         for c in ws[1]:
             c.font, c.fill = bold, head_fill
         for r in rows:
-            ws.append(r)
+            append_row(ws, r)
         ws.freeze_panes = "A2"
         for i, col in enumerate(ws.columns, 1):
             ws.column_dimensions[get_column_letter(i)].width = min(60, max(10, max(len(str(c.value or "")) for c in col) + 2))

@@ -20,6 +20,10 @@ class FacilityCreate(FacilityBase):
     id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
+class ProductionUnitCreate(CamelModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
 class FacilityUpdate(CamelModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     code: str | None = Field(default=None, min_length=1, max_length=20)
@@ -41,5 +45,8 @@ class FacilityOut(CamelModel):
     units: list[str] = Field(default_factory=list)
     commissioned: str
     employees: int = 0
+    active: bool = True
+    deactivated_at: str | None = None
+    deactivated_by: str | None = None
     created_at: str | None = None
     updated_at: str | None = None

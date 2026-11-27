@@ -64,6 +64,23 @@ def require_roles(*roles: str):
     return checker
 
 
+def require_permission(code: str):
+    """Endpoint guard based on the Role master: the caller's role must hold permission `code`
+    (see services/iam.py for the catalogue and the role grants; Administrator holds all of them)."""
+
+    def checker(user: CurrentUser, db: Db) -> dict[str, Any]:
+        from app.services import iam
+
+        if code not in iam.permissions_for(db, user):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"Role '{user['appRole']}' is not permitted to perform this action",
+            )
+        return user
+
+    return checker
+
+
 # Role constants matching the UI's three roles
 PLANT_ENGINEER = "Plant Engineer"
 SUSTAINABILITY_MANAGER = "Sustainability Manager"

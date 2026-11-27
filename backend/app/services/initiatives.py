@@ -11,12 +11,14 @@ from app.schemas.initiative import AdvanceRequest, InitiativeCreate, InitiativeU
 from app.services import initiative_assumptions, rules, targets_engine as te
 from app.services import initiatives_engine as ie
 from app.repositories.emission import EmissionRecordRepository
+from app.services import facilities as facilities_svc
 from app.services.common import audit, not_found, unprocessable
 
 
 def create_initiative(db: Database, user: Mapping[str, Any], p: InitiativeCreate) -> dict[str, Any]:
     if not FacilityRepository(db).exists(p.facility_id):
         raise not_found("Facility", p.facility_id)
+    facilities_svc.assert_active(db, p.facility_id)
     repo = InitiativeRepository(db)
     base = {
         "name": p.name.strip(),
@@ -109,7 +111,7 @@ def analysis(db: Database) -> dict[str, Any]:
     measured: list[dict[str, Any]] = []
     if base and base.get("byFacility"):
         agg = te.aggregate(EmissionRecordRepository(db).list())
-        fac_ids = [f["id"] for f in FacilityRepository(db).list()]
+        fac_ids = [f["id"] for f in facilities_svc.active_facilities(db)]  # completeness is judged on the current boundary
         after = [m for m in te.complete_months(agg, fac_ids) if m > base["end"]]
         for fid in sorted({i["facilityId"] for i in items}):
             mine = [i for i in items if i["facilityId"] == fid]

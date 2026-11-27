@@ -67,7 +67,7 @@ export function ImportDialog({ open, onOpenChange, facilityId, month, onLoadRow 
         <DialogHeader>
           <DialogTitle>Import activity data (CSV / Excel)</DialogTitle>
           <DialogDescription>
-            One row per facility and month. The file is checked first — nothing is saved until you confirm. Blank values are never treated as zero.
+            One row per production unit per facility and month (a facility with several units has one row for each; they are saved together as one monthly submission). The file is checked first — nothing is saved until you confirm. Blank values are never treated as zero.
           </DialogDescription>
         </DialogHeader>
 

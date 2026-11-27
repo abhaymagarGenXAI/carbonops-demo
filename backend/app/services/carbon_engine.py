@@ -100,13 +100,14 @@ def record_id(facility_code: str, month: str, index: int) -> str:
     return f"EM-{facility_code}-{month.replace('-', '')}-{index + 1}"
 
 
-def select_factor(factors: list[Mapping[str, Any]], source: str, month: str) -> tuple[Mapping[str, Any] | None, str]:
+def select_factor(factors: list[Mapping[str, Any]], source: str, month: str, source_id: str | None = None) -> tuple[Mapping[str, Any] | None, str]:
     """Factor effective at the start of `month`: the one with the latest validFrom <= that date.
 
     Superseded factors stay selectable for the periods they covered. If nothing was effective yet,
     the earliest known factor is used and the fallback is reported in the returned note.
     """
-    candidates = [f for f in factors if f.get("source") == source]
+    # By source id when both sides carry one (a renamed source keeps its history), otherwise by name.
+    candidates = [f for f in factors if (f.get("emissionSourceId") == source_id if source_id and f.get("emissionSourceId") else f.get("source") == source)]
     if not candidates:
         return None, f"No emission factor is defined for '{source}'"
     start = month_start(month)
@@ -131,14 +132,15 @@ def formula_text(activity: float, unit: str, factor_value: float, factor_unit: s
 
 def build_records(
     *, facility_id: str, facility_code: str, month: str, submission_id: str, submission_status: str,
-    data: Mapping[str, Any], factors: list[Mapping[str, Any]],
+    data: Mapping[str, Any], factors: list[Mapping[str, Any]], source_ids: Mapping[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Returns (records, problems). A source whose factor is missing/unusable is reported, not guessed."""
     calc_status, review_status = STATUS_MAP.get(submission_status, ("Pending", "Draft"))
     records: list[dict[str, Any]] = []
     problems: list[str] = []
     for idx, spec in enumerate(SOURCES):
-        factor, note = select_factor(factors, spec.name, month)
+        sid = (source_ids or {}).get(spec.name)
+        factor, note = select_factor(factors, spec.name, month, sid)
         if factor is None:
             problems.append(f"{spec.name}: {note}")
             continue
@@ -161,6 +163,8 @@ def build_records(
                 "factorUnit": factor["unit"],
                 "factorRef": factor["reference"],
                 "factorId": factor["id"],
+                "factorVersionId": factor["id"],
+                "emissionSourceId": sid,
                 "scope": spec.scope,
                 "co2e": co2e,
                 "calcStatus": calc_status,

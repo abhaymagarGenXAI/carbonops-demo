@@ -8,7 +8,7 @@ from app.repositories.document import DocumentRepository
 from app.repositories.facility import FacilityRepository
 from app.repositories.submission import SubmissionRepository
 from app.schemas.document import DocumentCreate
-from app.services import periods, uploads
+from app.services import iam, periods, uploads
 from app.services.common import audit, conflict, forbidden, not_found, unprocessable
 from app.utils.time import to_display, utcnow
 
@@ -28,6 +28,7 @@ def create_document(db: Database, user: Mapping[str, Any], p: DocumentCreate) ->
         "size": p.size,
         "format": p.format,
         "uploadedBy": user["name"],
+        "uploadedById": user["id"],
         "uploadedAt": stamp,
         "linkedRecord": p.linked_record,
         "version": "v1.0",
@@ -50,6 +51,7 @@ def upload_document(
     name = uploads.clean_name(filename)
     ext = uploads.extension(name)
     uploads.verify_content(ext, content)
+    uploads.scan(content)
     if linked_record:
         sub = SubmissionRepository(db).get(linked_record)
         if sub is None or sub["facilityId"] != facility_id or sub["month"] != month:
@@ -61,7 +63,7 @@ def upload_document(
         out = DocumentRepository(db).create({
             "id": doc_id, "name": name, "type": doc_type, "facilityId": facility_id, "month": month,
             "size": uploads.human_size(len(content)), "format": uploads.ALLOWED[ext][0],
-            "uploadedBy": user["name"], "uploadedAt": stamp, "linkedRecord": linked_record, "version": "v1.0",
+            "uploadedBy": user["name"], "uploadedById": user["id"], "uploadedAt": stamp, "linkedRecord": linked_record, "version": "v1.0",
             "versions": [{"version": "v1.0", "at": stamp[:10], "by": user["name"], "note": "Initial upload"}],
             "sizeBytes": len(content), "sha256": digest, "storedName": stored, "hasFile": True,
         })
@@ -89,7 +91,7 @@ def delete_document(db: Database, user: Mapping[str, Any], document_id: str) -> 
     raw = repo.get_raw(document_id)
     if raw is None:
         raise not_found("Document", document_id)
-    privileged = user["appRole"] in ("Administrator", "Sustainability Manager")
+    privileged = "activity.review" in iam.permissions_for(db, user)  # reviewers (by default Sustainability Manager + Administrator)
     if not privileged and raw.get("uploadedBy") != user["name"]:
         raise forbidden("You can only remove files you uploaded yourself")
     periods.assert_accepts_submissions(db, raw["month"])
@@ -100,3 +102,51 @@ def delete_document(db: Database, user: Mapping[str, Any], document_id: str) -> 
         raise not_found("Document", document_id)
     uploads.remove(raw.get("storedName"))
     audit(db, user, "Deleted", document_id, f"Evidence file '{raw['name']}' removed.")
+
+
+# ---------------------------------------------------------------------------------- repository view (Administrator)
+def repository(db: Database) -> dict[str, Any]:
+    """Every document with the record it is attached to, so an Administrator can audit the whole evidence store.
+
+    Attachment: `linkedRecord` (a submission id chosen at upload) when it points at a real submission; otherwise the
+    facility + month submission it is evidence for (flagged `inferred`); otherwise `none`. Also reports whether the file
+    is really on disk (legacy seeded records are metadata only)."""
+    from app.repositories.reference import ReferenceRepository
+
+    subs = SubmissionRepository(db).list()
+    by_id = {s["id"]: s for s in subs}
+    by_fm = {(s["facilityId"], s["month"]): s for s in subs}
+    fac = {f["id"]: f for f in FacilityRepository(db).list()}
+    periods_ = {p["period"]: p["status"] for p in (ReferenceRepository(db).get_items("reportingPeriods") or [])}
+    items: list[dict[str, Any]] = []
+    for d in DocumentRepository(db).list():
+        raw = DocumentRepository(db).get_raw(d["id"]) or {}
+        linked = (d.get("linkedRecord") or "").strip()
+        sub, how = (by_id.get(linked), "linked") if linked in by_id else (None, "none")
+        if sub is None and (d["facilityId"], d["month"]) in by_fm:
+            sub, how = by_fm[(d["facilityId"], d["month"])], "inferred"
+        stored = raw.get("storedName")
+        on_disk = bool(stored and uploads.path_of(stored))
+        items.append({
+            **{k: d.get(k) for k in ("id", "name", "type", "format", "size", "sizeBytes", "sha256", "version", "uploadedBy", "uploadedAt", "month", "facilityId", "linkedRecord")},
+            "facilityName": fac.get(d["facilityId"], {}).get("name", d["facilityId"]),
+            "versionCount": len(d.get("versions") or []) or 1,
+            "hasFile": bool(d.get("hasFile")), "fileOnDisk": on_disk, "fileMissing": bool(stored) and not on_disk,
+            "attachment": how, "submissionId": sub["id"] if sub else None, "submissionStatus": sub["status"] if sub else None,
+            "unit": sub.get("unit") if sub else None, "periodStatus": periods_.get(d["month"]),
+            "versions": d.get("versions") or [],
+        })
+    items.sort(key=lambda x: (x["uploadedAt"] or "", x["id"]), reverse=True)
+    by_type: dict[str, int] = {}
+    for x in items:
+        by_type[x["type"]] = by_type.get(x["type"], 0) + 1
+    return {
+        "summary": {
+            "total": len(items), "withFile": sum(1 for x in items if x["fileOnDisk"]),
+            "metadataOnly": sum(1 for x in items if not x["hasFile"] and not x["fileMissing"]),
+            "missingFiles": sum(1 for x in items if x["fileMissing"]),
+            "unattached": sum(1 for x in items if x["attachment"] == "none"),
+            "totalBytes": sum(x["sizeBytes"] or 0 for x in items), "byType": by_type,
+        },
+        "items": items,
+    }

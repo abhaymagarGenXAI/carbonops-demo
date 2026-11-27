@@ -165,6 +165,11 @@ export const authApi = {
     }
   },
 
+  /** The signed-in user as the server sees them now (role + permissions can change while a session is open). */
+  async me(): Promise<UserRec> {
+    return (await api.get<UserRec>("/auth/me")).data;
+  },
+
   async logout(): Promise<void> {
     try {
       await bare.post("/auth/logout");

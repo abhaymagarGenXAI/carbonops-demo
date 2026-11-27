@@ -36,7 +36,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useAuth } from "@/context/AuthContext";
 import { useStore } from "@/lib/store";
-import type { AppRole } from "@/types/domain";
+import { useRoles } from "@/hooks/useApi";
 
 const navTargets = [
   { label: "Dashboard", to: "/" },
@@ -51,26 +51,18 @@ const navTargets = [
   { label: "Administration", to: "/admin" },
 ];
 
-// const roleOptions = [
-//   "Operations Data Entry",
-//   "Facility Engineer",
-//   "Sustainability Analyst",
-//   "Reviewer / Approver",
-//   "Administrator",
-// ];
-
-const roleOptions: AppRole[] = [
-  "Plant Engineer",
-  "Sustainability Manager",
-  "Administrator",
-];
-
 export function TopBar() {
   const [open, setOpen] = useState(false);
   const [dark, setDark] = useState(false);
   const navigate = useNavigate();
-  const { role, setRole, submissions, aiAlerts, facilities } = useStore();
-  const { user, canSimulateRole, logout } = useAuth();
+  const { role, setRole, submissions, aiAlerts, facilities, assets, initiatives, documents } = useStore();
+  const { user, canSimulateRole, roleId, canOpen, logout } = useAuth();
+  const { data: roleOptions = [] } = useRoles(canSimulateRole); // every role, incl. custom ones, can be previewed
+  const go = (to: string) => {
+    setOpen(false);
+    navigate(to);
+  };
+  const reviewer = canOpen("/approvals"); // roles that work the review queue
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
@@ -102,7 +94,7 @@ export function TopBar() {
         className="ml-auto flex h-9 w-full max-w-md items-center gap-2 rounded-lg border border-border bg-card px-3 text-sm text-muted-foreground transition-colors hover:border-ring"
       >
         <Search className="size-4" />
-        <span className="truncate">Search facilities, assets, submissions…</span>
+        <span className="truncate">Jump to a page or record…</span>
         <kbd className="ml-auto hidden items-center gap-0.5 rounded border border-border px-1.5 py-0.5 text-[10px] sm:flex">
           <Command className="size-3" />K
         </kbd>
@@ -124,7 +116,7 @@ export function TopBar() {
           </div>
           <div className="max-h-80 divide-y divide-border overflow-y-auto">
             {aiAlerts.map((a) => (
-              <button key={a.id} type="button" className="flex w-full gap-3 px-4 py-3 text-left hover:bg-muted/50" onClick={() => navigate(alertLink(a, role))}>
+              <button key={a.id} type="button" className="flex w-full gap-3 px-4 py-3 text-left hover:bg-muted/50" onClick={() => navigate(alertLink(a, reviewer))}>
                 <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
                 <div className="space-y-1">
                   <p className="text-sm font-medium">{a.title}</p>
@@ -146,8 +138,8 @@ export function TopBar() {
             {aiAlerts.length + pendingApprovals.length === 0 ? <p className="px-4 py-6 text-center text-xs text-muted-foreground">Nothing needs your attention.</p> : null}
           </div>
           <div className="border-t border-border p-2">
-            <Button variant="ghost" size="sm" className="w-full" onClick={() => navigate(role === "Sustainability Manager" ? "/approvals" : "/activity")}>
-              {role === "Sustainability Manager" ? "Open review queue" : "Open Activity Data"}
+            <Button variant="ghost" size="sm" className="w-full" onClick={() => navigate(reviewer ? "/approvals" : "/activity")}>
+              {reviewer ? "Open review queue" : "Open Activity Data"}
             </Button>
           </div>
         </PopoverContent>
@@ -174,15 +166,15 @@ export function TopBar() {
             <>
               <DropdownMenuLabel className="text-xs text-muted-foreground">Simulate role (UI preview)</DropdownMenuLabel>
               <DropdownMenuRadioGroup
-                value={role}
-                onValueChange={(newRole) => {
-                  setRole(newRole as AppRole);
+                value={roleId ?? ""}
+                onValueChange={(newRoleId) => {
+                  setRole(newRoleId);
                   navigate("/");
                 }}
               >
                 {roleOptions.map((r) => (
-                  <DropdownMenuRadioItem key={r} value={r}>
-                    {r}
+                  <DropdownMenuRadioItem key={r.id} value={r.id}>
+                    {r.name}
                   </DropdownMenuRadioItem>
                 ))}
               </DropdownMenuRadioGroup>
@@ -205,37 +197,47 @@ export function TopBar() {
       </DropdownMenu>
 
       <CommandDialog open={open} onOpenChange={setOpen}>
-        <CommandInput placeholder="Search modules, facilities and assets…" />
+        <CommandInput placeholder="Jump to a page, facility, asset, submission, initiative or document…" />
         <CommandList>
-          <CommandEmpty>No matching records.</CommandEmpty>
-          <CommandGroup heading="Modules">
-            {navTargets.map((t) => (
-              <CommandItem
-                key={t.to}
-                value={t.label}
-                onSelect={() => {
-                  setOpen(false);
-                  navigate(t.to);
-                }}
-              >
-                {t.label}
-              </CommandItem>
+          <CommandEmpty>Nothing matches.</CommandEmpty>
+          <CommandGroup heading="Pages">
+            {navTargets.filter((t) => canOpen(t.to)).map((t) => (
+              <CommandItem key={t.to} value={t.label} onSelect={() => go(t.to)}>{t.label}</CommandItem>
             ))}
           </CommandGroup>
-          <CommandGroup heading="Facilities">
-            {facilities.map((f) => (
-              <CommandItem
-                key={f.id}
-                value={f.name}
-                onSelect={() => {
-                  setOpen(false);
-                  navigate("/assets");
-                }}
-              >
-                {f.name} · {f.region}
-              </CommandItem>
-            ))}
-          </CommandGroup>
+          {canOpen("/assets") ? (
+            <CommandGroup heading="Facilities & assets">
+              {facilities.map((f) => (
+                <CommandItem key={f.id} value={`${f.name} ${f.code} ${f.region}`} onSelect={() => go("/assets")}>{f.name} · {f.region}</CommandItem>
+              ))}
+              {assets.slice(0, 200).map((a) => (
+                <CommandItem key={a.id} value={`${a.name} ${a.id} ${a.type}`} onSelect={() => go("/assets")}>{a.name} · {a.id}</CommandItem>
+              ))}
+            </CommandGroup>
+          ) : null}
+          {canOpen("/activity") ? (
+            <CommandGroup heading="Submissions">
+              {submissions.slice(0, 200).map((s) => (
+                <CommandItem key={s.id} value={`${s.id} ${s.month} ${s.status} ${facilities.find((f) => f.id === s.facilityId)?.name ?? ""}`} onSelect={() => go(reviewer && (s.status === "Submitted" || s.status === "Under Review") ? "/approvals" : "/activity")}>
+                  {s.id} · {s.month} · {s.status}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          ) : null}
+          {canOpen("/initiatives") ? (
+            <CommandGroup heading="Initiatives">
+              {initiatives.map((i) => (
+                <CommandItem key={i.id} value={`${i.name} ${i.id} ${i.owner}`} onSelect={() => go("/initiatives")}>{i.name} · {i.status}</CommandItem>
+              ))}
+            </CommandGroup>
+          ) : null}
+          {canOpen("/documents") ? (
+            <CommandGroup heading="Documents">
+              {documents.slice(0, 200).map((d) => (
+                <CommandItem key={d.id} value={`${d.name} ${d.id}`} onSelect={() => go("/documents")}>{d.name}</CommandItem>
+              ))}
+            </CommandGroup>
+          ) : null}
         </CommandList>
       </CommandDialog>
     </header>

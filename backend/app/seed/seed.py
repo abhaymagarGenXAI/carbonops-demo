@@ -11,6 +11,8 @@ import json
 from pathlib import Path
 from typing import Any, Callable
 
+from app.services.iam import ensure_iam
+from app.services.masters import ensure_masters
 from app.core.config import get_settings
 from app.core.security import hash_password
 from app.db import collections as C
@@ -110,6 +112,8 @@ def run(reset: bool = False) -> dict[str, tuple[int, int]]:
         "users": upsert_many(UserRepository(db), data["users"], transform=user_tx),
         "audit_log": upsert_many(AuditRepository(db), data["audit"], seq=False, transform=_audit),
     }
+    ensure_masters(db)  # production units, streams, sources, asset types, factor-version links
+    ensure_iam(db)  # roles, permissions, grants, users.roleId, user_facilities, userId links
     ref = ReferenceRepository(db)
     made = 0
     for key in REFERENCE_KEYS:

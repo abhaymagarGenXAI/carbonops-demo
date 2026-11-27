@@ -38,12 +38,12 @@ def method_of(unit: str) -> str:
     return METHODS["spend"] if ce._norm(unit) in {"inr", "₹", "usd", "eur", "rs", "lakhinr", "crinr"} else METHODS["activity"]
 
 
-def calculate(*, month: str, category: str, source: str, activity: float, factors: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def calculate(*, month: str, category: str, source: str, activity: float, factors: Sequence[Mapping[str, Any]], source_id: str | None = None) -> dict[str, Any]:
     """Returns the calculated part of an entry. Raises Scope3Error when the factor cannot be applied — nothing is guessed."""
     if category not in CATEGORIES:
         raise Scope3Error(f"Unknown Scope 3 category '{category}'")
     options = factor_options(factors)
-    factor, note = ce.select_factor(options, source, month)
+    factor, note = ce.select_factor(options, source, month, source_id)
     if factor is None:
         raise Scope3Error(f"No Scope 3 emission factor named '{source}' exists. Add one under Emission factors first.")
     if factor.get("category") and factor["category"] != category:
@@ -55,7 +55,8 @@ def calculate(*, month: str, category: str, source: str, activity: float, factor
         raise Scope3Error(f"Factor {factor['id']} — {exc}") from exc
     return {
         "unit": unit, "method": method_of(unit), "factor": factor["value"], "factorUnit": factor["unit"],
-        "factorRef": factor["reference"], "factorId": factor["id"], "co2e": co2e, "calcNote": note,
+        "factorRef": factor["reference"], "factorId": factor["id"], "factorVersionId": factor["id"], "emissionSourceId": factor.get("emissionSourceId") or source_id,
+        "co2e": co2e, "calcNote": note,
         "formula": ce.formula_text(activity, unit, factor["value"], factor["unit"], co2e),
     }
 

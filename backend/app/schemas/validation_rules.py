@@ -26,6 +26,7 @@ class ValidationRulesIn(CamelModel):
     zero_block: bool = False
     limits: list[LimitIn] = Field(default_factory=list, max_length=12)
     inspection_interval_days: int = Field(default=150, ge=30, le=730)
+    energy_variance_pct: float = Field(default=14.0, gt=0, le=500)
 
     @model_validator(mode="after")
     def _consistent(self):
